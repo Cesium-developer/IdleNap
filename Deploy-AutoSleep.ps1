@@ -57,19 +57,6 @@ try {
     Write-Log "⚠️ GPU 利用率计数器不可用（将使用仅 CPU 模式）" -Color "Yellow"
 }
 
-$hibernateEnabled = $false
-try {
-    $regValue = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "HibernateEnabled" -ErrorAction Stop).HibernateEnabled
-    if ($regValue -eq 1) {
-        $hibernateEnabled = $true
-        Write-Log "✅ 休眠功能已启用" -Color "Green"
-    } else {
-        Write-Log "⚠️ 休眠功能未启用，将尝试自动开启" -Color "Yellow"
-    }
-} catch {
-    Write-Log "⚠️ 无法读取休眠状态（注册表项不存在），将尝试自动开启" -Color "Yellow"
-}
-
 $targetDir = "C:\ProgramData\AutoSleep"
 $targetScript = Join-Path $targetDir "AutoSleep.ps1"
 if (Test-Path $targetDir) {
@@ -102,17 +89,6 @@ if ($taskExists) {
 # ---- 阶段2：准备与配置 ----
 Write-Log "----- 阶段2：准备与配置 -----" -Color "Cyan"
 
-if (-not $hibernateEnabled) {
-    try {
-        powercfg -h on
-        Write-Log "✅ 休眠功能已开启。" -Color "Green"
-    } catch {
-        Write-Log "❌ 开启休眠失败，请手动执行 powercfg -h on。" -Color "Red"
-        Read-Host "按 Enter 退出"
-        exit 1
-    }
-}
-
 if (-not (Test-Path $targetDir)) {
     New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     Write-Log "✅ 已创建目录 $targetDir" -Color "Green"
@@ -128,9 +104,90 @@ if (-not (Test-Path $sourceScript)) {
 Copy-Item -Path $sourceScript -Destination $targetScript -Force
 Write-Log "✅ 已复制 AutoSleep.ps1 到 $targetScript" -Color "Green"
 
-# 生成默认 settings.json（含所有新字段）
+# ---- 检测休眠状态并询问用户（仅在首次安装时） ----
+$isUpgrade = Test-Path "$targetDir\settings.json"
+$enableHibernate = $true
+$defaultPowerAction = "Hibernate"
+
+if (-not $isUpgrade) {
+    Write-Log "检测到首次安装，检查休眠功能状态..." -Color "Cyan"
+
+    # 检测当前休眠状态
+    $hibernateReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "HibernateEnabled" -ErrorAction SilentlyContinue
+    $hibernateCurrentlyOn = ($hibernateReg -and $hibernateReg.HibernateEnabled -eq 1)
+
+    if ($hibernateCurrentlyOn) {
+        Write-Log "✅ 休眠功能已开启，直接使用默认配置。" -Color "Green"
+        $enableHibernate = $true
+        $defaultPowerAction = "Hibernate"
+    } else {
+        # 计算休眠文件实际/预计占用大小
+        $hiberFile = Get-ChildItem -Path "C:\" -Filter "hiberfil.sys" -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hiberFile) {
+            $hibernateSizeGB = [math]::Round($hiberFile.Length / 1GB, 1)
+            $sizeHint = "当前休眠文件约 $hibernateSizeGB GB"
+        } else {
+            $totalMemoryGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+            $hibernateSizeGB = [math]::Round($totalMemoryGB * 0.5, 1)
+            $sizeHint = "预计占用约 $hibernateSizeGB GB（通常为物理内存的 40%~60%）"
+        }
+
+        Write-Log "⚠️ 休眠功能未开启（$sizeHint）" -Color "Yellow"
+        Write-Log "正在询问用户是否开启..." -Color "Cyan"
+
+        Add-Type -AssemblyName System.Windows.Forms
+
+        $msg = '休眠功能可让电脑在完全断电后恢复状态，但会在 C 盘占用空间。' + "`n`n" + $sizeHint + "`n`n" + '是否开启休眠功能？' + "`n" + '（选择“否”将使用睡眠模式，不占用额外磁盘空间）'
+        $result = [System.Windows.Forms.MessageBox]::Show($msg, "AutoSleep - 休眠功能设置", "YesNo", "Question")
+
+        if ($result -eq "Yes") {
+            Write-Log "用户选择开启休眠功能。" -Color "Green"
+            $enableHibernate = $true
+            $defaultPowerAction = "Hibernate"
+        } else {
+            Write-Log "用户选择不开启休眠功能，将使用睡眠模式。" -Color "Yellow"
+            $enableHibernate = $false
+            $defaultPowerAction = "Sleep"
+        }
+    }
+} else {
+    # 升级安装：检测当前休眠状态，但不询问
+    $hibernateReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "HibernateEnabled" -ErrorAction SilentlyContinue
+    $hibernateCurrentlyOn = ($hibernateReg -and $hibernateReg.HibernateEnabled -eq 1)
+    $enableHibernate = $hibernateCurrentlyOn
+
+    # 从现有配置读取 PowerAction，保持用户原有选择
+    try {
+        $existingConfig = Get-Content "$targetDir\settings.json" -Raw | ConvertFrom-Json
+        $defaultPowerAction = $existingConfig.PowerAction
+        Write-Log "✅ 升级安装，沿用现有配置（PowerAction = $defaultPowerAction）" -Color "Green"
+    } catch {
+        # 如果配置文件损坏，回退到默认
+        $defaultPowerAction = "Hibernate"
+        Write-Log "⚠️ 无法读取现有配置，使用默认值" -Color "Yellow"
+    }
+}
+
+# ---- 执行休眠开启/关闭 ----
+if ($enableHibernate) {
+    try {
+        powercfg -h on
+        Write-Log "✅ 休眠功能已开启。" -Color "Green"
+    } catch {
+        Write-Log "❌ 开启休眠失败，请手动执行 powercfg -h on。" -Color "Red"
+    }
+} else {
+    try {
+        powercfg -h off
+        Write-Log "✅ 休眠功能已关闭。" -Color "Yellow"
+    } catch {
+        Write-Log "⚠️ 关闭休眠失败，可能已被其他程序占用。" -Color "Yellow"
+    }
+}
+
+# ---- 生成默认 settings.json（含所有字段） ----
 $defaultConfig = @{
-    PowerAction          = "Hibernate"
+    PowerAction          = $defaultPowerAction
     DurationMin          = 15
     CpuThreshold         = 30
     GpuThreshold         = 30
@@ -148,8 +205,29 @@ $defaultConfig = @{
     EnableDiskCheck      = $true
     DiskThresholdKBps    = 10240
 }
-$defaultConfig | ConvertTo-Json | Set-Content -Path "$targetDir\settings.json" -Encoding UTF8
-Write-Log "✅ 已生成默认配置文件 settings.json" -Color "Green"
+
+# 如果是升级安装且配置文件存在，不覆盖已有配置（只补充缺失字段）
+if ($isUpgrade -and (Test-Path "$targetDir\settings.json")) {
+    try {
+        $existingConfig = Get-Content "$targetDir\settings.json" -Raw | ConvertFrom-Json
+        foreach ($key in $defaultConfig.Keys) {
+            if ($null -eq $existingConfig.$key) {
+                $existingConfig | Add-Member -MemberType NoteProperty -Name $key -Value $defaultConfig[$key] -Force
+            }
+        }
+        # 保留用户原有的 PowerAction（除非当前休眠状态与配置不一致）
+        # 但我们在前面已经根据现有配置读取了 defaultPowerAction，所以这里不需要额外调整
+        $existingConfig | ConvertTo-Json | Set-Content -Path "$targetDir\settings.json" -Encoding UTF8
+        Write-Log "✅ 已更新配置文件（保留用户原有设置，补充新字段）" -Color "Green"
+    } catch {
+        # 如果配置文件损坏，直接覆盖
+        $defaultConfig | ConvertTo-Json | Set-Content -Path "$targetDir\settings.json" -Encoding UTF8
+        Write-Log "✅ 已重新生成默认配置文件（原配置文件损坏）" -Color "Yellow"
+    }
+} else {
+    $defaultConfig | ConvertTo-Json | Set-Content -Path "$targetDir\settings.json" -Encoding UTF8
+    Write-Log "✅ 已生成默认配置文件 settings.json" -Color "Green"
+}
 
 # 复制设置程序
 $sourceSettings = Join-Path $PSScriptRoot "Settings.ps1"
@@ -269,7 +347,7 @@ if (Test-Path $regPath) {
 }
 New-Item -Path $regPath -Force | Out-Null
 Set-ItemProperty -Path $regPath -Name "DisplayName" -Value "AutoSleep 智能休眠工具"
-Set-ItemProperty -Path $regPath -Name "DisplayVersion" -Value "1.0.2"
+Set-ItemProperty -Path $regPath -Name "DisplayVersion" -Value "1.0.3"
 Set-ItemProperty -Path $regPath -Name "Publisher" -Value "Cesium-developer"
 Set-ItemProperty -Path $regPath -Name "InstallLocation" -Value $targetDir
 Set-ItemProperty -Path $regPath -Name "UninstallString" -Value "$targetDir\Uninstall.exe"
@@ -302,6 +380,7 @@ Write-Log "  主脚本位置：$targetScript" -Color "White"
 Write-Log "  日志文件位置：$newLogPath" -Color "White"
 Write-Log "  卸载程序位置：$targetDir\Uninstall.exe" -Color "White"
 Write-Log "  运行模式：$(if (-not $gpuAvailable) { '仅 CPU' } else { 'CPU + GPU' })" -Color "White"
+Write-Log "  休眠状态：$(if ($enableHibernate) { '已开启' } else { '已关闭' })" -Color "White"
 Write-Log "✅ 已注册到 Windows 设置（开始菜单 → 设置 → 应用 → 已安装的应用）" -Color "Green"
 Write-Log "部署日志已保存至：$LogPath" -Color "Cyan"
 Write-Host "按 Enter 退出..." -ForegroundColor Cyan

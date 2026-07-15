@@ -70,7 +70,7 @@ $config.DiskThresholdKBps    = [int]$config.DiskThresholdKBps
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "AutoSleep 设置"
-$form.Size = New-Object System.Drawing.Size(480, 840)
+$form.Size = New-Object System.Drawing.Size(480, 920)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -87,6 +87,25 @@ function New-Point([int]$x, [int]$y) {
     return New-Object System.Drawing.Point($x, $y)
 }
 
+# ---- 辅助函数：检测休眠状态 ----
+function Get-HibernateStatus {
+    try {
+        $regValue = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power" -Name "HibernateEnabled" -ErrorAction Stop).HibernateEnabled
+        return ($regValue -eq 1)
+    } catch {
+        return $false
+    }
+}
+
+function Get-MemorySize {
+    try {
+        $totalBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+        return [math]::Round($totalBytes / 1GB, 1)
+    } catch {
+        return $null
+    }
+}
+
 # ---- 1. 模式 ----
 $lblMode = New-Object System.Windows.Forms.Label
 $lblMode.Text = "休眠/睡眠模式："
@@ -99,8 +118,35 @@ $comboMode.Location = New-Point $leftControl $top
 $comboMode.Size = New-Object System.Drawing.Size($controlWidth, 25)
 $comboMode.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $comboMode.Items.AddRange(@("Hibernate", "Sleep"))
-$comboMode.SelectedItem = $config.PowerAction
+
+# 根据休眠状态决定默认选中项并调整下拉选项
+$hibernateOn = Get-HibernateStatus
+if (-not $hibernateOn) {
+    # 休眠关闭时，从下拉框中移除 Hibernate 选项
+    $comboMode.Items.Remove("Hibernate")
+    if ($comboMode.Items.Count -eq 1 -and $comboMode.Items[0] -eq "Sleep") {
+        $comboMode.SelectedIndex = 0
+    }
+    # 如果配置中是 Hibernate 但系统不支持，自动切换到 Sleep
+    if ($config.PowerAction -eq "Hibernate") {
+        $config.PowerAction = "Sleep"
+        $config | ConvertTo-Json | Set-Content -Path $configPath -Encoding UTF8
+    }
+    $comboMode.SelectedItem = "Sleep"
+} else {
+    # 休眠开启时，正常显示
+    $comboMode.SelectedItem = $config.PowerAction
+}
 $form.Controls.Add($comboMode)
+$top += $rowHeight
+
+# 休眠状态提示（在模式选择下方显示）
+$lblHibernateStatus = New-Object System.Windows.Forms.Label
+$lblHibernateStatus.Text = if ($hibernateOn) { "✅ 休眠功能已开启" } else { "⚠️ 休眠功能未开启，仅可使用睡眠模式" }
+$lblHibernateStatus.Location = New-Point $leftControl $top
+$lblHibernateStatus.Size = New-Object System.Drawing.Size($controlWidth, 25)
+$lblHibernateStatus.ForeColor = if ($hibernateOn) { [System.Drawing.Color]::LightGreen } else { [System.Drawing.Color]::Yellow }
+$form.Controls.Add($lblHibernateStatus)
 $top += $rowHeight
 
 # ---- 2. 空闲时间 ----
@@ -198,7 +244,7 @@ $form.Controls.Add($txtNetworkThreshold)
 $form.Controls.Add($lblNetworkUnit)
 $top += $rowHeight
 
-# ---- 9. 磁盘检测（新增） ----
+# ---- 9. 磁盘检测 ----
 $chkDisk = New-Object System.Windows.Forms.CheckBox
 $chkDisk.Text = "启用磁盘活动检测"
 $chkDisk.Location = New-Point $leftLabel $top
@@ -303,7 +349,7 @@ $txtTimeEnd.Text = $config.TimeWindowEnd.ToString()
 $form.Controls.Add($txtTimeEnd)
 $top += $rowHeight + 10
 
-# ---- 按钮 ----
+# ---- 按钮行1 ----
 $btnSave = New-Object System.Windows.Forms.Button
 $btnSave.Text = "保存"
 $btnSave.Location = New-Point 20 $top
@@ -330,6 +376,13 @@ $btnSave.Add_Click({
     }
     if ($duration -le 0 -or $cpu -lt 0 -or $gpu -lt 0 -or $interval -lt 3 -or $netThreshold -lt 1 -or $diskThreshold -lt 1 -or $timeStart -lt 0 -or $timeStart -gt 23 -or $timeEnd -lt 0 -or $timeEnd -gt 23) {
         [System.Windows.Forms.MessageBox]::Show("数值超出合理范围，请检查。", "输入错误", "OK", "Error")
+        return
+    }
+
+    # 检查休眠状态与模式选择的匹配
+    $hibernateOn = Get-HibernateStatus
+    if (-not $hibernateOn -and $comboMode.SelectedItem -eq "Hibernate") {
+        [System.Windows.Forms.MessageBox]::Show("休眠功能未开启，无法选择休眠模式。`n请先开启休眠功能，或选择睡眠模式。", "模式不可用", "OK", "Error")
         return
     }
 
@@ -380,10 +433,10 @@ $btnHelp.Add_Click({
         Start-Process "notepad.exe" $readmePath
     } else {
         [System.Windows.Forms.MessageBox]::Show(
-                "帮助文件未找到，请确认安装完整。`n路径：$readmePath",
-                "错误",
-                "OK",
-                "Error"
+            "帮助文件未找到，请确认安装完整。`n路径：$readmePath",
+            "错误",
+            "OK",
+            "Error"
         )
     }
 })
@@ -420,10 +473,10 @@ $btnClearLog.Add_Click({
         schtasks /run /tn "AutoSleep" 2>&1 | Out-Null
     } catch {
         [System.Windows.Forms.MessageBox]::Show(
-                "清空失败：`n$($_.Exception.Message)",
-                "错误",
-                "OK",
-                "Error"
+            "清空失败：`n$($_.Exception.Message)",
+            "错误",
+            "OK",
+            "Error"
         )
     }
 })
@@ -436,7 +489,6 @@ $btnShowLog.Size = New-Object System.Drawing.Size(80, 30)
 $btnShowLog.Add_Click({
     $logFile = "C:\ProgramData\AutoSleep\AutoSleep.log"
     if (Test-Path $logFile) {
-        # 构建命令字符串：设置黑底白字，清屏，设置标题，开始追踪日志
         $cmd = @"
 `$Host.UI.RawUI.BackgroundColor = 'Black'
 `$Host.UI.RawUI.ForegroundColor = 'White'
@@ -452,13 +504,114 @@ Get-Content 'C:\ProgramData\AutoSleep\AutoSleep.log' -Wait
         )
     } else {
         [System.Windows.Forms.MessageBox]::Show(
-                "日志文件尚未生成，请先运行 AutoSleep 主程序。`n路径：$logFile",
-                "提示",
-                "OK",
-                "Information"
+            "日志文件尚未生成，请先运行 AutoSleep 主程序。`n路径：$logFile",
+            "提示",
+            "OK",
+            "Information"
         )
     }
 })
 $form.Controls.Add($btnShowLog)
+
+# ---- 按钮行2：休眠开关 ----
+$top += $rowHeight + 10
+
+$btnToggleHibernate = New-Object System.Windows.Forms.Button
+# 动态文本在刷新函数中设置
+$btnToggleHibernate.Location = New-Point 150 $top
+$btnToggleHibernate.Size = New-Object System.Drawing.Size(160, 30)
+
+# 刷新休眠开关按钮状态和界面
+function Refresh-HibernateUI {
+    $hibernateOn = Get-HibernateStatus
+    if ($hibernateOn) {
+        $btnToggleHibernate.Text = "关闭休眠"
+    } else {
+        $btnToggleHibernate.Text = "开启休眠"
+    }
+    # 更新状态标签
+    $lblHibernateStatus.Text = if ($hibernateOn) { "✅ 休眠功能已开启" } else { "⚠️ 休眠功能未开启，仅可使用睡眠模式" }
+    $lblHibernateStatus.ForeColor = if ($hibernateOn) { [System.Drawing.Color]::LightGreen } else { [System.Drawing.Color]::Goldenrod }
+
+    # 更新下拉框：休眠关闭时移除 Hibernate 选项
+    $currentSelected = $comboMode.SelectedItem
+    $comboMode.Items.Clear()
+    if ($hibernateOn) {
+        $comboMode.Items.AddRange(@("Hibernate", "Sleep"))
+        if ($currentSelected -in @("Hibernate", "Sleep")) {
+            $comboMode.SelectedItem = $currentSelected
+        } else {
+            $comboMode.SelectedItem = "Sleep"
+        }
+    } else {
+        $comboMode.Items.Add("Sleep")
+        $comboMode.SelectedItem = "Sleep"
+        # 如果配置中是 Hibernate，自动切换为 Sleep 并保存
+        $config = Get-Content $configPath -Raw | ConvertFrom-Json
+        if ($config.PowerAction -eq "Hibernate") {
+            $config.PowerAction = "Sleep"
+            $config | ConvertTo-Json | Set-Content -Path $configPath -Encoding UTF8
+        }
+    }
+}
+
+$btnToggleHibernate.Add_Click({
+    $hibernateOn = Get-HibernateStatus
+    if ($hibernateOn) {
+        $hiberFile = Get-ChildItem -Path "C:\" -Filter "hiberfil.sys" -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hiberFile) {
+            $hibernateSizeGB = [math]::Round($hiberFile.Length / 1GB, 1)
+            $sizeHint = "约 $hibernateSizeGB GB"
+        } else {
+            $totalMemoryGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+            $hibernateSizeGB = [math]::Round($totalMemoryGB * 0.5, 1)
+            $sizeHint = "约 $hibernateSizeGB GB（通常为物理内存的 40%~60%）"
+        }
+        $confirmMsg = "关闭休眠功能将释放 C 盘约 $sizeHint GB 空间，但会失去休眠模式。`n`n确定要关闭休眠功能吗？"
+        $title = "确认关闭休眠"
+    } else {
+        $hiberFile = Get-ChildItem -Path "C:\" -Filter "hiberfil.sys" -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hiberFile) {
+            $hibernateSizeGB = [math]::Round($hiberFile.Length / 1GB, 1)
+            $sizeHint = "约 $hibernateSizeGB GB"
+        } else {
+            $totalMemoryGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+            $hibernateSizeGB = [math]::Round($totalMemoryGB * 0.5, 1)
+            $sizeHint = "约 $hibernateSizeGB GB（通常为物理内存的 40%~60%）"
+        }
+        $confirmMsg = "开启休眠功能将在 C 盘占用约 $sizeHint GB 空间，但可提供完整的休眠模式。`n`n确定要开启休眠功能吗？"
+        $title = "确认开启休眠"
+    }
+
+    $result = [System.Windows.Forms.MessageBox]::Show($confirmMsg, $title, "YesNo", "Question")
+    if ($result -eq "Yes") {
+        if ($hibernateOn) {
+            powercfg -h off
+        } else {
+            powercfg -h on
+        }
+        # 刷新界面
+        Refresh-HibernateUI
+        [System.Windows.Forms.MessageBox]::Show(
+            "休眠功能已" + $(if ($hibernateOn) { "关闭" } else { "开启" }) + "。",
+            "操作完成",
+            "OK",
+            "Information"
+        )
+    }
+})
+$form.Controls.Add($btnToggleHibernate)
+
+# ---- 按钮行2：标签说明 ----
+$lblHibernateHint = New-Object System.Windows.Forms.Label
+$lblHibernateHint.Text = "点击按钮可在系统级开关休眠功能"
+$lblHibernateHint.Location = New-Point 20 ($top + 5)
+$lblHibernateHint.Size = New-Object System.Drawing.Size(130, 30)
+$lblHibernateHint.ForeColor = [System.Drawing.Color]::Gray
+$lblHibernateHint.Font = New-Object System.Drawing.Font("微软雅黑", 8)
+$form.Controls.Add($lblHibernateHint)
+
+# 初始化界面
+Refresh-HibernateUI
 
 $form.ShowDialog()
