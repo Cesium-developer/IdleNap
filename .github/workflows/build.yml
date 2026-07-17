@@ -41,9 +41,11 @@ jobs:
       - name: 编译卸载程序（EXE版）
         run: makensis -DEXE_VERSION installer\Uninstall.nsi
 
-      - name: 移动卸载程序
-        run: move Uninstall.exe src\Uninstall.exe
-
+      - name: 移动卸载程序到 src
+        run: |
+          move Uninstall_script.exe src\Uninstall_script.exe
+          move Uninstall_exe.exe src\Uninstall_exe.exe
+          
       - name: 编译安装程序（脚本版）
         run: makensis -DSCRIPT_VERSION installer\Setup.nsi
 
