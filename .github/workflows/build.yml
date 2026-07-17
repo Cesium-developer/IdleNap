@@ -15,62 +15,40 @@ jobs:
       - name: 拉取代码
         uses: actions/checkout@v5
 
-      - name: 安装 ps2exe
-        shell: pwsh
-        run: |
-          Install-Module -Name ps2exe -Force
-
       - name: 安装 NSIS
         run: choco install nsis --version 3.09 -y
-
-      - name: 编译 PS1 到 EXE
-        shell: pwsh
-        run: |
-          ps2exe -InputFile src\AutoSleep.ps1 -OutputFile src\AutoSleep.exe -NoConsole
-          ps2exe -InputFile src\Settings.ps1 -OutputFile src\Settings.exe -NoConsole
-          ps2exe -InputFile src\Deploy-AutoSleep.ps1 -OutputFile src\Deploy-AutoSleep.exe -NoConsole
-          ps2exe -InputFile src\ClearLog.ps1 -OutputFile src\ClearLog.exe -NoConsole
-          ps2exe -InputFile src\Uninstall-AutoSleep.ps1 -OutputFile src\Uninstall-AutoSleep.exe -NoConsole
 
       - name: 将 NSIS 添加到 PATH
         run: echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
-      - name: 编译卸载程序（脚本版）
-        run: makensis -DSCRIPT_VERSION installer\Uninstall.nsi
+      - name: 编译卸载程序
+        run: makensis installer\Uninstall.nsi
 
-      - name: 编译卸载程序（EXE版）
-        run: makensis -DEXE_VERSION installer\Uninstall.nsi
+      - name: 移动卸载程序
+        run: move Uninstall.exe src\Uninstall.exe
 
-      - name: 移动卸载程序到 src
-        run: |
-          move installer\Uninstall_script.exe src\Uninstall_script.exe
-          move installer\Uninstall_exe.exe src\Uninstall_exe.exe
-          
-      - name: 编译安装程序（脚本版）
-        run: makensis -DSCRIPT_VERSION installer\Setup.nsi
-
-      - name: 编译安装程序（EXE版）
-        run: makensis -DEXE_VERSION installer\Setup.nsi
+      - name: 编译安装程序
+        run: makensis installer\Setup.nsi
 
       - name: 移动安装程序到根目录
-        run: |
-          move installer\AutoSleep_Setup_script.exe .\AutoSleep_Setup_script.exe
-          move installer\AutoSleep_Setup_exe.exe .\AutoSleep_Setup_exe.exe
+        run: move installer\AutoSleep_Setup.exe .\
 
       - name: 生成 SHA256 校验文件
         shell: pwsh
         run: |
-          $files = @("AutoSleep_Setup_script.exe", "AutoSleep_Setup_exe.exe")
-          foreach ($f in $files) {
-            $hash = Get-FileHash -Algorithm SHA256 $f
-            $hash.Hash | Out-File -Encoding ASCII -FilePath "$f.sha256"
+          $exe = ".\AutoSleep_Setup.exe"
+          if (-Not (Test-Path $exe)) {
+            Write-Error "Installer not found: $exe"
+            exit 1
           }
+          $hash = Get-FileHash -Algorithm SHA256 $exe
+          # 仅保存哈希文本，便于用户复制验证或下载校验文件
+          $hash.Hash | Out-File -Encoding ASCII -FilePath ".\AutoSleep_Setup.exe.sha256"
+          Write-Host "SHA256: $($hash.Hash)"
 
       - name: 上传到 Release（包含校验）
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            AutoSleep_Setup_script.exe
-            AutoSleep_Setup_script.exe.sha256
-            AutoSleep_Setup_exe.exe
-            AutoSleep_Setup_exe.exe.sha256
+            AutoSleep_Setup.exe
+            AutoSleep_Setup.exe.sha256
