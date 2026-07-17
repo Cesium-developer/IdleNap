@@ -22,10 +22,16 @@ jobs:
         run: echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
       - name: 编译卸载程序
-        run: makensis Uninstall.nsi
+        run: makensis installer\Uninstall.nsi
+
+      - name: 移动安装程序
+        run: move Uninstall.exe src\Uninstall.exe
 
       - name: 编译安装程序
-        run: makensis Setup.nsi
+        run: makensis installer\Setup.nsi
+
+      - name: 移动安装程序到根目录
+        run: move installer\AutoSleep_Setup.exe .\
 
       - name: 生成 SHA256 校验文件
         shell: pwsh
