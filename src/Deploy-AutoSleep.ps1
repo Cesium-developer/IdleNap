@@ -30,9 +30,19 @@ Write-Log "已获得管理员权限，继续执行部署..." -Color "Green"
 # ---- 阶段1：环境检测 ----
 Write-Log "----- 阶段1：环境检测 -----" -Color "Cyan"
 
+$os = Get-CimInstance Win32_OperatingSystem
+$version = [Version]$os.Version
+$minVersion = [Version]"10.0.17134"
+if ($version -lt $minVersion) {
+    Write-Log "当前操作系统版本 $version 低于最低要求 (10.0.17134)，不支持该工具。" -Color "Red"
+    Read-Host "按 Enter 退出"
+    exit 1
+}
+Write-Log "✅ 操作系统版本: $version (符合要求)" -Color "Green"
+
 $psVer = $PSVersionTable.PSVersion
 if ($psVer.Major -lt 5 -or ($psVer.Major -eq 5 -and $psVer.Minor -lt 1)) {
-    Write-Log "当前 PowerShell 版本 $psVer 低于 5.1，不支持，请更新后重试。" -Color "Red"
+    Write-Log "当前 PowerShell 版本 $psVer 低于 5.1，不支持。" -Color "Red"
     Read-Host "按 Enter 退出"
     exit 1
 }
