@@ -424,7 +424,8 @@ namespace AutoSleep.Settings
             try { var latest = Version.Parse(latestVersion); var current = Version.Parse(currentVersion); if (latest <= current) { MessageBox.Show(string.Format("已是最新版本（当前 v{0}）。", currentVersion), "提示", MessageBoxButtons.OK, MessageBoxIcon.Information); return; } } catch { }
             if (MessageBox.Show(string.Format("发现新版本 v{0}（当前 v{1}）。\n\n是否下载并安装？", latestVersion, currentVersion), "更新可用", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             string downloadUrl = null;
-            try { var serializer = new System.Web.Script.Serialization.JavaScriptSerializer(); var data = serializer.Deserialize<Dictionary<string, object>>(releaseJson); var assets = data != null ? data["assets"] as List<object> : null; if (assets != null) { foreach (var a in assets) { var asset = a as Dictionary<string, object>; string name = (asset != null && asset.ContainsKey("name") && asset["name"] != null) ? asset["name"].ToString() : ""; if (name != null && name.IndexOf("AutoSleep_Setup_Win7", StringComparison.OrdinalIgnoreCase) >= 0) { downloadUrl = (asset != null && asset.ContainsKey("browser_download_url") && asset["browser_download_url"] != null) ? asset["browser_download_url"].ToString() : null; break; } } } } catch { }
+            try { var serializer = new System.Web.Script.Serialization.JavaScriptSerializer(); var data = serializer.Deserialize<Dictionary<string, object>>(releaseJson); var rawAssets = data != null && data.ContainsKey("assets") ? data["assets"] : null; var assets = rawAssets as System.Collections.ArrayList; if (assets != null) { foreach (var a in assets) { var asset = a as Dictionary<string, object>; string name = (asset != null && asset.ContainsKey("name") && asset["name"] != null) ? asset["name"].ToString() : ""; if (name.IndexOf("AutoSleep_Setup_Win7", StringComparison.OrdinalIgnoreCase) >= 0) { downloadUrl = (asset != null && asset.ContainsKey("browser_download_url") && asset["browser_download_url"] != null) ? asset["browser_download_url"].ToString() : null; break; } } } } catch { }
+            if (string.IsNullOrEmpty(downloadUrl)) { downloadUrl = TryFindRegularInstaller(releaseJson); }
             if (string.IsNullOrEmpty(downloadUrl)) { MessageBox.Show("未找到 C# 版安装包，请手动从 GitHub Releases 下载。", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
             string tempInstaller = Path.Combine(Path.GetTempPath(), "AutoSleep_Setup_Win7_Net40.exe");
             bool downloadOk = false;
@@ -439,6 +440,31 @@ namespace AutoSleep.Settings
             try { File.Delete(tempInstaller); } catch { }
             MessageBox.Show("更新安装完成。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             Close();
+        }
+
+        private string TryFindRegularInstaller(string releaseJson)
+        {
+            try
+            {
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var data = serializer.Deserialize<Dictionary<string, object>>(releaseJson);
+                if (data == null || !data.ContainsKey("assets")) return null;
+                var rawAssets = data["assets"] as System.Collections.ArrayList;
+                if (rawAssets == null) return null;
+                foreach (var a in rawAssets)
+                {
+                    var asset = a as Dictionary<string, object>;
+                    if (asset == null) continue;
+                    string name = asset.ContainsKey("name") && asset["name"] != null ? asset["name"].ToString() : "";
+                    if (name.IndexOf("AutoSleep_Setup.exe", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("AutoSleep_Setup_Win7", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (asset.ContainsKey("browser_download_url") && asset["browser_download_url"] != null)
+                            return asset["browser_download_url"].ToString();
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
     }
 }
