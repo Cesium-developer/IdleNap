@@ -353,7 +353,7 @@ namespace AutoSleep.Settings
             if (!File.Exists(curlPath)) return null;
             try
             {
-                var psi = new ProcessStartInfo(curlPath, "-s --connect-timeout 10 -H \"User-Agent: AutoSleep\" \"" + url + "\"")
+                var psi = new ProcessStartInfo(curlPath, "-sk --connect-timeout 10 -H \"User-Agent: AutoSleep\" \"" + url + "\"")
                 {
                     UseShellExecute = false, CreateNoWindow = true,
                     RedirectStandardOutput = true, RedirectStandardError = true
@@ -375,7 +375,7 @@ namespace AutoSleep.Settings
             if (!File.Exists(curlPath)) return false;
             try
             {
-                var psi = new ProcessStartInfo(curlPath, "-sL --connect-timeout 15 --max-time 120 -o \"" + outputPath + "\" \"" + url + "\"")
+                var psi = new ProcessStartInfo(curlPath, "-skL --connect-timeout 15 --max-time 120 -o \"" + outputPath + "\" \"" + url + "\"")
                 {
                     UseShellExecute = false, CreateNoWindow = true
                 };
