@@ -375,7 +375,7 @@ namespace AutoSleep.Deploy
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "AutoSleep 智能休眠工具");
-                        key.SetValue("DisplayVersion", "1.0.10");
+                        key.SetValue("DisplayVersion", "1.0.11");
                         key.SetValue("Publisher", "Cesium-developer");
                         key.SetValue("InstallLocation", InstallDir);
                         key.SetValue("DisplayIcon", Path.Combine(InstallDir, "AutoSleepSettings.exe"));
