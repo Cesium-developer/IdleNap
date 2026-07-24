@@ -171,9 +171,11 @@ namespace AutoSleep.Core
         private List<string> GetStringList(Dictionary<string, object> dict, string key)
         {
             if (!dict.ContainsKey(key)) return new List<string>();
-            var list = dict[key] as List<object>;
-            if (list == null) return new List<string>();
-            return list.ConvertAll(x => x == null ? "" : x.ToString());
+            var raw = dict[key] as System.Collections.ArrayList;
+            if (raw == null) return new List<string>();
+            var result = new List<string>();
+            foreach (var x in raw) result.Add(x == null ? "" : x.ToString());
+            return result;
         }
     }
 }
