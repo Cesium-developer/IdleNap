@@ -12,6 +12,9 @@ namespace AutoSleep.Settings
 {
     public class MainForm : Form
     {
+        private float _dpiScale = 1.0f;
+        private int Dpi(int val) { return (int)Math.Round(val * _dpiScale); }
+
         private const string ConfigPath = @"C:\ProgramData\AutoSleep\settings.json";
         private const string InstallDir = @"C:\ProgramData\AutoSleep";
         private const string LogFile = @"C:\ProgramData\AutoSleep\AutoSleep.log";
@@ -150,13 +153,24 @@ namespace AutoSleep.Settings
         private void BuildForm()
         {
             Text = "AutoSleep 设置";
+            // 窗体图标（从 exe 自身提取）
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+            // 获取 DPI 缩放比
+            try { using (var g = Graphics.FromHwnd(IntPtr.Zero)) { _dpiScale = g.DpiX / 96f; } } catch { }
+
             var screen = Screen.PrimaryScreen.WorkingArea;
-            int formHeight = Math.Min(920, (int)(screen.Height * 0.9));
-            Size = new Size(480, formHeight);
+            int formHeight = Math.Min(Dpi(920), (int)(screen.Height * 0.9));
+            Size = new Size(Dpi(480), formHeight);
+            // 手动居中于 WorkingArea（避开任务栏）
+            StartPosition = FormStartPosition.Manual;
+            Location = new Point(
+                screen.Left + (screen.Width - Width) / 2,
+                screen.Top + (screen.Height - Height) / 2
+            );
             AutoScroll = true;
-            AutoScrollMinSize = new Size(0, 920);
-            StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            AutoScrollMinSize = new Size(0, Dpi(920));
+            FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             MinimizeBox = false;
 
@@ -164,7 +178,7 @@ namespace AutoSleep.Settings
 
             // 1. 模式
             AddLabel("休眠/睡眠模式：", leftLabel, top, labelWidth, 25);
-            _comboMode = new ComboBox { Location = NewPoint(leftControl, top), Size = new Size(controlWidth, 25), DropDownStyle = ComboBoxStyle.DropDownList };
+            _comboMode = new ComboBox { Location = NewPoint(leftControl, top), Size = new Size(controlWidth, Dpi(25)), DropDownStyle = ComboBoxStyle.DropDownList };
             _comboMode.Items.AddRange(new[] { "Hibernate", "Sleep" });
             bool hibernateOn = GetHibernateStatus();
             if (!hibernateOn)
@@ -176,7 +190,7 @@ namespace AutoSleep.Settings
             }
             else { _comboMode.SelectedItem = GetConfigStr("PowerAction"); }
             Controls.Add(_comboMode);
-            _lblHibernateStatus = new Label { Text = hibernateOn ? "✅ 休眠功能已开启" : "⚠️ 休眠功能未开启，仅可使用睡眠模式", Location = NewPoint(leftControl, top += rowHeight), Size = new Size(controlWidth + 60, 25), ForeColor = hibernateOn ? Color.LightGreen : Color.Yellow };
+            _lblHibernateStatus = new Label { Text = hibernateOn ? "✅ 休眠功能已开启" : "⚠️ 休眠功能未开启，仅可使用睡眠模式", Location = NewPoint(leftControl, top += rowHeight), Size = new Size(controlWidth + 60, Dpi(25)), ForeColor = hibernateOn ? Color.LightGreen : Color.Yellow };
             Controls.Add(_lblHibernateStatus);
             top += rowHeight;
 
@@ -206,15 +220,15 @@ namespace AutoSleep.Settings
             AddLabel("KB/s", leftControl + 90, top + 3, 40, 20); top += rowHeight;
 
             // 10. 进程白名单
-            _chkProcess = new CheckBox { Text = "启用进程白名单（包含匹配）", Location = NewPoint(leftLabel - 10, top), Size = new Size(220, 25), Checked = GetConfigBool("EnableProcessCheck") };
+            _chkProcess = new CheckBox { Text = "启用进程白名单（包含匹配）", Location = NewPoint(leftLabel - 10, top), Size = new Size(Dpi(220), Dpi(25)), Checked = GetConfigBool("EnableProcessCheck") };
             Controls.Add(_chkProcess);
-            _lstProcessList = new ListBox { Location = NewPoint(leftControl, top + 25), Size = new Size(140, 80), SelectionMode = SelectionMode.One };
+            _lstProcessList = new ListBox { Location = NewPoint(leftControl, top + 25), Size = new Size(Dpi(140), Dpi(80)), SelectionMode = SelectionMode.One };
             foreach (var p in GetConfigList("ProtectedProcesses")) _lstProcessList.Items.Add(p);
             Controls.Add(_lstProcessList);
-            var btnAdd = new Button { Text = "添加", Location = NewPoint(leftControl + 145, top + 25), Size = new Size(50, 25) };
+            var btnAdd = new Button { Text = "添加", Location = NewPoint(leftControl + 145, top + 25), Size = new Size(Dpi(50), Dpi(25)) };
             btnAdd.Click += (s, e) => { string input = Microsoft.VisualBasic.Interaction.InputBox("输入进程名（不包含 .exe）：", "添加进程", ""); if (!string.IsNullOrWhiteSpace(input)) _lstProcessList.Items.Add(input.Trim()); };
             Controls.Add(btnAdd);
-            var btnRemove = new Button { Text = "删除", Location = NewPoint(leftControl + 145, top + 25 + 30), Size = new Size(50, 25) };
+            var btnRemove = new Button { Text = "删除", Location = NewPoint(leftControl + 145, top + 25 + 30), Size = new Size(Dpi(50), Dpi(25)) };
             btnRemove.Click += (s, e) => { if (_lstProcessList.SelectedItem != null) _lstProcessList.Items.Remove(_lstProcessList.SelectedItem); };
             Controls.Add(btnRemove);
             var lblProcessHint = new Label { Text = "（点击添加/删除管理进程，匹配不区分大小写）", Location = NewPoint(leftControl, top + 25 + 85), AutoSize = true, ForeColor = Color.Gray };
@@ -233,25 +247,25 @@ namespace AutoSleep.Settings
             AddLabel("天", leftControl + 135, top + 3, 30, 20); top += rowHeight;
 
             // 按钮行1
-            var btnSave = new Button { Text = "保存", Location = NewPoint(20, top), Size = new Size(80, 30) };
+            var btnSave = new Button { Text = "保存", Location = NewPoint(20, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnSave.Click += (s, e) => SaveConfig(); Controls.Add(btnSave);
-            var btnHelp = new Button { Text = "帮助", Location = NewPoint(110, top), Size = new Size(80, 30) };
+            var btnHelp = new Button { Text = "帮助", Location = NewPoint(110, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnHelp.Click += (s, e) => { if (File.Exists(ReadmeFile)) Process.Start("notepad.exe", ReadmeFile); else MessageBox.Show(string.Format("帮助文件未找到，请确认安装完整。\n路径：{0}", ReadmeFile), "错误", MessageBoxButtons.OK, MessageBoxIcon.Error); };
             Controls.Add(btnHelp);
-            var btnCancel = new Button { Text = "取消", Location = NewPoint(200, top), Size = new Size(80, 30) };
+            var btnCancel = new Button { Text = "取消", Location = NewPoint(200, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnCancel.Click += (s, e) => Close(); Controls.Add(btnCancel);
-            var btnClearLog = new Button { Text = "清空日志", Location = NewPoint(290, top), Size = new Size(80, 30) };
+            var btnClearLog = new Button { Text = "清空日志", Location = NewPoint(290, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnClearLog.Click += (s, e) => { KillAutoSleepProcesses(); System.Threading.Thread.Sleep(200); if (File.Exists(LogFile)) { File.Delete(LogFile); try { string json = File.ReadAllText(ConfigPath); var cfg = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json); if (cfg != null) { cfg["LastRotationTime"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"); File.WriteAllText(ConfigPath, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(cfg)); } } catch { } MessageBox.Show("日志已清空。", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information); } else { MessageBox.Show("日志文件不存在，无需清空。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information); } RunScheduledTask("AutoSleep"); };
             Controls.Add(btnClearLog);
-            var btnShowLog = new Button { Text = "显示日志", Location = NewPoint(380, top), Size = new Size(80, 30) };
+            var btnShowLog = new Button { Text = "显示日志", Location = NewPoint(380, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnShowLog.Click += (s, e) => { if (File.Exists(LogFile)) { string cmd = "$Host.UI.RawUI.BackgroundColor = 'Black'; $Host.UI.RawUI.ForegroundColor = 'White'; Clear-Host; $Host.UI.RawUI.WindowTitle = 'AutoSleep 日志监控'; Get-Content '" + LogFile + "' -Wait"; Process.Start("powershell.exe", "-NoProfile -NoExit -Command \"" + cmd + "\""); } else { MessageBox.Show(string.Format("日志文件尚未生成，请先运行主程序。\n路径：{0}", LogFile), "提示", MessageBoxButtons.OK, MessageBoxIcon.Information); } };
             Controls.Add(btnShowLog);
 
             // 按钮行2
             top += rowHeight + 10;
-            _chkCustomLogic = new CheckBox { Text = "启用自定义逻辑", Location = NewPoint(150, top + rowHeight + 10), Size = new Size(160, 30), Checked = GetConfigBool("CustomLogicEnabled") };
+            _chkCustomLogic = new CheckBox { Text = "启用自定义逻辑", Location = NewPoint(150, top + rowHeight + 10), Size = new Size(Dpi(160), Dpi(30)), Checked = GetConfigBool("CustomLogicEnabled") };
             Controls.Add(_chkCustomLogic);
-            var btnCustomLogic = new Button { Text = "🧩 自定义逻辑", Location = NewPoint(20, top + rowHeight + 10), Size = new Size(120, 30) };
+            var btnCustomLogic = new Button { Text = "🧩 自定义逻辑", Location = NewPoint(20, top + rowHeight + 10), Size = new Size(Dpi(120), Dpi(30)) };
             btnCustomLogic.Click += (s, e) =>
             {
                 try { var req = (HttpWebRequest)WebRequest.Create("http://localhost:56790/shutdown"); req.Timeout = 2000; try { req.GetResponse().Close(); } catch { } } catch { }
@@ -263,29 +277,29 @@ namespace AutoSleep.Settings
                 Process.Start("http://localhost:56790/editor.html");
             };
             Controls.Add(btnCustomLogic);
-            var lblCustomInfo = new Label { Text = "启用后，空闲判断将完全由逻辑树控制。阈值沿用当前设置，独立开关仅对默认模式生效。", Location = NewPoint(20, top + rowHeight + 45), Size = new Size(420, 35), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei", 8) };
+            var lblCustomInfo = new Label { Text = "启用后，空闲判断将完全由逻辑树控制。阈值沿用当前设置，独立开关仅对默认模式生效。", Location = NewPoint(20, top + rowHeight + 45), Size = new Size(Dpi(420), Dpi(35)), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei", 8) };
             Controls.Add(lblCustomInfo);
 
             // 休眠开关
             top += rowHeight + 80;
-            _btnToggleHibernate = new Button { Location = NewPoint(150, top), Size = new Size(160, 30) };
+            _btnToggleHibernate = new Button { Location = NewPoint(150, top), Size = new Size(Dpi(160), Dpi(30)) };
             _btnToggleHibernate.Click += (s, e) => ToggleHibernate();
             Controls.Add(_btnToggleHibernate);
-            var lblHibernateHint = new Label { Text = "点击按钮可在系统级开关休眠功能", Location = NewPoint(20, top + 5), Size = new Size(130, 30), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei", 8) };
+            var lblHibernateHint = new Label { Text = "点击按钮可在系统级开关休眠功能", Location = NewPoint(20, top + 5), Size = new Size(Dpi(130), Dpi(30)), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei", 8) };
             Controls.Add(lblHibernateHint);
             RefreshHibernateUI();
 
             // 按钮行3
             top += rowHeight + 80;
-            var btnUpdate = new Button { Text = "检查更新", Location = NewPoint(20, top), Size = new Size(80, 30) };
+            var btnUpdate = new Button { Text = "检查更新", Location = NewPoint(20, top), Size = new Size(Dpi(80), Dpi(30)) };
             btnUpdate.Click += (s, e) => CheckUpdate();
             Controls.Add(btnUpdate);
         }
 
-        private Point NewPoint(int x, int y) { return new Point(x, y); }
-        private Label AddLabel(string text, int x, int y, int w, int h) { var lbl = new Label { Text = text, Location = NewPoint(x, y), Size = new Size(w, h) }; Controls.Add(lbl); return lbl; }
-        private TextBox AddTextBox(int x, int y, int w, string text) { var tb = new TextBox { Location = NewPoint(x, y), Size = new Size(w, 25), Text = text }; Controls.Add(tb); return tb; }
-        private CheckBox AddCheckBox(string text, int x, int y, int w, bool c) { var cb = new CheckBox { Text = text, Location = NewPoint(x, y), Size = new Size(w, 25), Checked = c }; Controls.Add(cb); return cb; }
+        private Point NewPoint(int x, int y) { return new Point(Dpi(x), Dpi(y)); }
+        private Label AddLabel(string text, int x, int y, int w, int h) { var lbl = new Label { Text = text, Location = NewPoint(x, y), Size = new Size(Dpi(w), Dpi(h)) }; Controls.Add(lbl); return lbl; }
+        private TextBox AddTextBox(int x, int y, int w, string text) { var tb = new TextBox { Location = NewPoint(x, y), Size = new Size(Dpi(w), Dpi(25)), Text = text }; Controls.Add(tb); return tb; }
+        private CheckBox AddCheckBox(string text, int x, int y, int w, bool c) { var cb = new CheckBox { Text = text, Location = NewPoint(x, y), Size = new Size(Dpi(w), Dpi(25)), Checked = c }; Controls.Add(cb); return cb; }
         private int ParseInt(string text, int def) { text = (text == null ? null : text.Trim()); if (string.IsNullOrEmpty(text)) return def; int result; int.TryParse(text, out result); return result; }
         private string GetConfigStr(string key) { if (_config.ContainsKey(key) && _config[key] != null) return _config[key].ToString(); return ""; }
         private int GetConfigInt(string key) { try { return Convert.ToInt32(_config.ContainsKey(key) ? _config[key] : 0); } catch { return 0; } }

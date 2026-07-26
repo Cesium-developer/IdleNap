@@ -138,7 +138,8 @@ namespace AutoSleep.Deploy
             string sourceDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
             string[] filesToCopy = {
                 "AutoSleep.exe", "AutoSleepSettings.exe", "AutoSleepServer.exe",
-                "Uninstall.exe", "README.txt", "editor.html"
+                "Uninstall.exe", "README.txt", "editor.html",
+                "AutoSleep.ico"
             };
             foreach (string file in filesToCopy)
             {
@@ -285,14 +286,16 @@ namespace AutoSleep.Deploy
             {
                 string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 string shortcutPath = Path.Combine(desktopPath, ShortcutName + ".lnk");
+                string settingsExe = Path.Combine(InstallDir, "AutoSleepSettings.exe").Replace("'", "''");
                 string psCmd = string.Format(
                     "$ws = New-Object -ComObject WScript.Shell; " +
                     "$sc = $ws.CreateShortcut('{0}'); " +
                     "$sc.TargetPath = '{1}'; " +
+                    "$sc.IconLocation = '{1}, 0'; " +
                     "$sc.WorkingDirectory = '{2}'; " +
                     "$sc.Save();",
                     shortcutPath.Replace("'", "''"),
-                    Path.Combine(InstallDir, "AutoSleepSettings.exe").Replace("'", "''"),
+                    settingsExe,
                     InstallDir.Replace("'", "''")
                 );
                 var proc = Process.Start("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -Command \"" + psCmd + "\"");
@@ -375,7 +378,7 @@ namespace AutoSleep.Deploy
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "AutoSleep 智能休眠工具");
-                        key.SetValue("DisplayVersion", "1.0.11");
+                        key.SetValue("DisplayVersion", "1.0.8");
                         key.SetValue("Publisher", "Cesium-developer");
                         key.SetValue("InstallLocation", InstallDir);
                         key.SetValue("DisplayIcon", Path.Combine(InstallDir, "AutoSleepSettings.exe"));
