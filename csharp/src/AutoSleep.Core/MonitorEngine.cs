@@ -165,6 +165,10 @@ namespace AutoSleep.Core
                             _log.Write("Timer reset by custom logic");
                             _elapsed = 0;
                         }
+                        else if (action == "nothing")
+                        {
+                            // 什么都不做，保持 elapsed 不变
+                        }
                         else
                         {
                             if (_elapsed > 0)

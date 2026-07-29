@@ -106,7 +106,9 @@ namespace AutoSleep.Core
 
         private RuleResult EvaluateOperator(Dictionary<string, object> node, Dictionary<string, bool> values)
         {
-            string op = node.ContainsKey("op") ? node["op"] as string : "";
+            string op = "";
+            if (node.ContainsKey("operator")) op = node["operator"] as string;
+            else if (node.ContainsKey("op")) op = node["op"] as string;
             List<object> children = ToList(node.ContainsKey("children") ? node["children"] : null);
 
             if (children == null || children.Count == 0)
@@ -196,7 +198,7 @@ namespace AutoSleep.Core
                 case "sleep":
                     return new RuleResult { Idle = true, Action = "sleep" };
                 case "nothing":
-                    return new RuleResult { Idle = true, Action = "none" };
+                    return new RuleResult { Idle = false, Action = "nothing" };
                 default:
                     return new RuleResult { Idle = true, Action = "none" };
             }
