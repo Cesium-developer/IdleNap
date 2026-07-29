@@ -185,7 +185,7 @@ namespace AutoSleep.Server
             try
             {
                 string json;
-                using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+                using (var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
                 {
                     json = reader.ReadToEnd();
                 }

@@ -195,8 +195,10 @@ namespace AutoSleep.Core
                     return new RuleResult { Idle = true, Action = "continue_timer" };
                 case "sleep":
                     return new RuleResult { Idle = true, Action = "sleep" };
+                case "nothing":
+                    return new RuleResult { Idle = true, Action = "none" };
                 default:
-                    return new RuleResult { Idle = true, Action = "continue_timer" };
+                    return new RuleResult { Idle = true, Action = "none" };
             }
         }
     }
