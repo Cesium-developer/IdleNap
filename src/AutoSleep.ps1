@@ -304,6 +304,10 @@ function Evaluate-CustomLogic {
                     # 立即睡眠：返回 idle=true，但主循环应该特殊处理
                     return @{ idle = $true; action = "sleep" }
                 }
+                "nothing" {
+                    # 什么都不做：不重置计时器，也不累加
+                    return @{ idle = $false; action = "nothing" }
+                }
                 default {
                     # 未知动作，默认当作 continue_timer
                     return @{ idle = $true; action = "continue_timer" }
@@ -500,6 +504,8 @@ while ($true) {
             if ($action -eq "reset_timer") {
                 Write-Host "$(Get-Date -Format HH:mm:ss) Timer reset by custom logic"
                 $elapsed = 0
+            } elseif ($action -eq "nothing") {
+                # 什么都不做，保持 elapsed 不变
             } else {
                 if ($elapsed -gt 0) {
                     Write-Host "$(Get-Date -Format HH:mm:ss) Load recovered, timer reset (CPU: $($cpu.ToString('F1'))%, GPU: $($gpu.ToString('F1'))%)"

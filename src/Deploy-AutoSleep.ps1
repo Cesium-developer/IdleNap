@@ -443,7 +443,7 @@ try {
     # 创建新子项
     $subKey = $uninstallKey.CreateSubKey("AutoSleep")
     $subKey.SetValue("DisplayName", "AutoSleep 智能休眠工具")
-    $subKey.SetValue("DisplayVersion", "1.0.12")
+    $subKey.SetValue("DisplayVersion", "1.0.13")
     $subKey.SetValue("Publisher", "Cesium-developer")
     $subKey.SetValue("InstallLocation", "C:\ProgramData\AutoSleep")
     $subKey.SetValue("UninstallString", "C:\ProgramData\AutoSleep\Uninstall.exe")

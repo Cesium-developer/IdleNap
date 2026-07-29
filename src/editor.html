@@ -339,15 +339,78 @@
                 let n = thenBlock;
                 while (n) {
                     thenChildren.push(blockToJson(n));
-                    n = n.getNextBlock();
+                    if (n.type === 'control_if') {
+                        // 跳过已被 control_if 内部 elif/else 链检测消耗的 elif/else 块
+                        let skip = n.getNextBlock();
+                        while (skip && (skip.type === 'control_elif' || skip.type === 'control_else')) {
+                            skip = skip.getNextBlock();
+                        }
+                        n = skip;
+                    } else {
+                        n = n.getNextBlock();
+                    }
                 }
                 const thenValue = thenChildren.length === 1 ? thenChildren[0] : { type: 'sequence', actions: thenChildren };
-                return {
+
+                // 检测 elif/else 链
+                let elifList = [];
+                let elseBlock = null;
+                let nextNode = block.getNextBlock();
+                while (nextNode) {
+                    if (nextNode.type === 'control_elif') {
+                        const elifCond = blockToJson(nextNode.getInputTargetBlock('CONDITION'));
+                        const elifThenBlock = nextNode.getInputTargetBlock('THEN');
+                        const elifThenChildren = [];
+                        let m = elifThenBlock;
+                        while (m) {
+                            elifThenChildren.push(blockToJson(m));
+                            if (m.type === 'control_if') {
+                                let skip = m.getNextBlock();
+                                while (skip && (skip.type === 'control_elif' || skip.type === 'control_else')) {
+                                    skip = skip.getNextBlock();
+                                }
+                                m = skip;
+                            } else {
+                                m = m.getNextBlock();
+                            }
+                        }
+                        const elifThenValue = elifThenChildren.length === 1 ? elifThenChildren[0] : { type: 'sequence', actions: elifThenChildren };
+                        elifList.push({ condition: elifCond, then: elifThenValue });
+                        nextNode = nextNode.getNextBlock();
+                    } else if (nextNode.type === 'control_else') {
+                        const elseThenBlock = nextNode.getInputTargetBlock('THEN');
+                        const elseThenChildren = [];
+                        let m = elseThenBlock;
+                        while (m) {
+                            elseThenChildren.push(blockToJson(m));
+                            if (m.type === 'control_if') {
+                                let skip = m.getNextBlock();
+                                while (skip && (skip.type === 'control_elif' || skip.type === 'control_else')) {
+                                    skip = skip.getNextBlock();
+                                }
+                                m = skip;
+                            } else {
+                                m = m.getNextBlock();
+                            }
+                        }
+                        const elseThenValue = elseThenChildren.length === 1 ? elseThenChildren[0] : { type: 'sequence', actions: elseThenChildren };
+                        elseBlock = elseThenValue;
+                        nextNode = nextNode.getNextBlock();
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                const result = {
                     type: 'control',
                     control: 'if',
                     condition: cond,
                     then: thenValue
                 };
+                if (elifList.length > 0) result.elif = elifList;
+                if (elseBlock) result.else = elseBlock;
+                return result;
             }
 
             if (type === 'control_elif' || type === 'control_else') {
@@ -366,49 +429,12 @@
                 while (current) {
                     if (current.type === 'control_if') {
                         const ifJson = blockToJson(current);
-                        let elifList = [];
-                        let elseBlock = null;
+                        actions.push(ifJson);
+                        // 跳过 elif/else 块（已被 control_if 内部捕获）
                         let nextNode = current.getNextBlock();
-                        while (nextNode) {
-                            if (nextNode.type === 'control_elif') {
-                                const elifCond = blockToJson(nextNode.getInputTargetBlock('CONDITION'));
-                                const elifThenBlock = nextNode.getInputTargetBlock('THEN');
-                                const elifThenChildren = [];
-                                let m = elifThenBlock;
-                                while (m) {
-                                    elifThenChildren.push(blockToJson(m));
-                                    m = m.getNextBlock();
-                                }
-                                const elifThenValue = elifThenChildren.length === 1 ? elifThenChildren[0] : { type: 'sequence',
-                                    actions: elifThenChildren };
-                                elifList.push({ condition: elifCond, then: elifThenValue });
-                                nextNode = nextNode.getNextBlock();
-                            } else if (nextNode.type === 'control_else') {
-                                const elseThenBlock = nextNode.getInputTargetBlock('THEN');
-                                const elseThenChildren = [];
-                                let m = elseThenBlock;
-                                while (m) {
-                                    elseThenChildren.push(blockToJson(m));
-                                    m = m.getNextBlock();
-                                }
-                                const elseThenValue = elseThenChildren.length === 1 ? elseThenChildren[0] : { type: 'sequence',
-                                    actions: elseThenChildren };
-                                elseBlock = elseThenValue;
-                                nextNode = nextNode.getNextBlock();
-                                break;
-                            } else {
-                                break;
-                            }
+                        while (nextNode && (nextNode.type === 'control_elif' || nextNode.type === 'control_else')) {
+                            nextNode = nextNode.getNextBlock();
                         }
-                        const completeIf = {
-                            type: 'control',
-                            control: 'if',
-                            condition: ifJson.condition,
-                            then: ifJson.then
-                        };
-                        if (elifList.length > 0) completeIf.elif = elifList;
-                        if (elseBlock) completeIf.else = elseBlock;
-                        actions.push(completeIf);
                         current = nextNode;
                     } else {
                         const json = blockToJson(current);
@@ -731,17 +757,20 @@
 
                 if (jsonData.type === 'sequence') {
                     let prevBlock = null;
+                    let firstBlock = null;
                     for (const action of jsonData.actions) {
                         const block = jsonToBlocks(action);
                         if (block) {
                             if (prevBlock) {
                                 prevBlock.setNextStatement(true);
                                 prevBlock.nextConnection.connect(block.previousConnection);
+                            } else {
+                                firstBlock = block;
                             }
                             prevBlock = block;
                         }
                     }
-                    return prevBlock;
+                    return firstBlock;
                 }
 
                 if (jsonData.type === 'logic') {

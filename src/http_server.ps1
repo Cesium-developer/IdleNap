@@ -63,7 +63,7 @@ try {
         if ($path -eq '/config.js') {
             Write-Log "  -> Generating config.js"
             try {
-                $config = Get-Content $configPath -Raw | ConvertFrom-Json
+                $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 $treeJson = $config.CustomLogicTree | ConvertTo-Json -Compress -Depth 10
                 if ($null -eq $config.CustomLogicTree) { $treeJson = "null" }
 
@@ -117,7 +117,7 @@ window.__AUTOSLEEP_CONFIG = {
 
         if ($request.HttpMethod -eq 'POST' -and $path -eq '/save') {
             Write-Log "  -> POST /save received"
-            $reader = New-Object System.IO.StreamReader($request.InputStream, $request.ContentEncoding)
+            $reader = New-Object System.IO.StreamReader($request.InputStream, [System.Text.Encoding]::UTF8)
             $json = $reader.ReadToEnd()
             $reader.Close()
             Write-Log "  -> JSON length: $($json.Length)"
@@ -126,7 +126,7 @@ window.__AUTOSLEEP_CONFIG = {
                 $parsed = $json | ConvertFrom-Json
                 Write-Log "  -> JSON parsed successfully"
 
-                $config = Get-Content $configPath -Raw | ConvertFrom-Json
+                $config = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 Write-Log "  -> Config loaded"
 
                 $config | Add-Member -MemberType NoteProperty -Name "CustomLogicTree" -Value $null -Force
@@ -138,7 +138,7 @@ window.__AUTOSLEEP_CONFIG = {
                 $config | ConvertTo-Json -Depth 100 | Set-Content -Path $configPath -Encoding UTF8
                 Write-Log "  -> Config written"
 
-                $verify = Get-Content $configPath -Raw | ConvertFrom-Json
+                $verify = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 if ($verify.CustomLogicTree -eq $null) {
                     throw "CustomLogicTree is null after write"
                 }

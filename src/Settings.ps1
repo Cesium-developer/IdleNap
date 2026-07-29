@@ -2,6 +2,14 @@
 # Settings.ps1 - AutoSleep 设置程序
 # ============================================================
 
+# ---- DPI 感知 + 视觉样式 ----
+Add-Type -Name DPI -Namespace Native -MemberDefinition '
+[DllImport("user32.dll")]
+public static extern bool SetProcessDPIAware();
+'
+[Native.DPI]::SetProcessDPIAware() | Out-Null
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
 # ---- 隐藏控制台窗口 ----
 Add-Type -Name Window -Namespace Console -MemberDefinition '
 [DllImport("kernel32.dll")]
@@ -73,9 +81,9 @@ $config.LogRetentionDays     = [int]$config.LogRetentionDays
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "AutoSleep 设置"
+$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 
 # 自适应窗口高度（小屏幕设备适配）
-Add-Type -AssemblyName System.Windows.Forms
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $formHeight = [Math]::Min(920, [Math]::Floor($screen.Height * 0.9))
 $form.Size = New-Object System.Drawing.Size(480, $formHeight)
@@ -83,8 +91,12 @@ $form.Size = New-Object System.Drawing.Size(480, $formHeight)
 $form.AutoScroll = $true
 $form.AutoScrollMinSize = New-Object System.Drawing.Size(0, 920)
 
-$form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedDialog"
+$form.StartPosition = "Manual"
+$form.Location = New-Object System.Drawing.Point(
+    [Math]::Max(0, [Math]::Floor(($screen.Width - $form.Width) / 2)),
+    [Math]::Max(0, [Math]::Floor(($screen.Height - $form.Height) / 2))
+)
+$form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
 
@@ -798,23 +810,13 @@ $btnUpdate.Add_Click({
         return
     }
 
-    # 6. 下载安装包到 %TEMP%（直连失败自动换 ghproxy 镜像）
+    # 6. 下载安装包到 %TEMP%
     $tempInstaller = "$env:TEMP\AutoSleep_Setup.exe"
-    $downloadUrls = @($asset.browser_download_url, "https://ghproxy.net/$($asset.browser_download_url)")
-    $downloaded = $false
-    $downloadError = ""
-    foreach ($url in $downloadUrls) {
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $tempInstaller -TimeoutSec 30 -ErrorAction Stop
-            $downloaded = $true
-            break
-        } catch {
-            $downloadError = $_.Exception.Message
-        }
-    }
-    if (-not $downloaded) {
+    try {
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tempInstaller -TimeoutSec 30 -ErrorAction Stop
+    } catch {
         [System.Windows.Forms.MessageBox]::Show(
-                "下载失败：`n`n$downloadError",
+                "下载失败：`n`n$($_.Exception.Message)",
                 "错误",
                 "OK",
                 "Error"
