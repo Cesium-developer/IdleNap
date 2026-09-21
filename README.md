@@ -1,6 +1,6 @@
 # AutoSleep
 
-![Build Status](https://github.com/Cesium-developer/AutoSleep/actions/workflows/build.yml/badge.svg)
+![Build Status](https://github.com/Cesium-developer/IdleNap/actions/workflows/build.yml/badge.svg)
 
 ![设置界面](docs/images/settings.png)
 
@@ -221,7 +221,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 
 **Q：日志文件会撑爆硬盘吗？**
 
-不会。每天约 1~2 MB，一个月约 30~60 MB，可忽略。你可以在设置界面点击 “清空日志” 按钮手动清理。
+不会。每天约 1~2 MB，一个月约 30~60 MB，可忽略。可以在设置界面点击 “清空日志” 按钮手动清理。
 
 **Q：为什么我设了 15 分钟，但感觉时间不准？**
 
@@ -229,7 +229,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 
 **Q：我选了 Sleep，但实际上表现为休眠？**
 
-这是正常现象，原因分两种情况：
+这是可能出现的情况，原因分两种：
 
 - 情况一（常见）：某些笔记本（尤其是 2020 年后的新款）仅支持 S0 现代待机，不支持传统 S3 睡眠。Windows 会将 Sleep 请求映射为休眠（S4），导致唤醒时出现恢复界面。
 - 情况二：系统电源设置中启用了 “混合睡眠”，导致睡眠一定时间后自动转为休眠。
@@ -245,7 +245,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 两种方式：
 
 - 方式一：Windows 设置 → 应用 → 已安装的应用 → 找到 “AutoSleep 智能休眠工具” → 卸载
-- 方式二：运行 `C:\ProgramData\AutoSleep\Uninstall.exe`
+- 方式二：运行 `C:\ProgramData\AutoSleep\Uninstall.exe`（Powershell版）/`C:\ProgramData\AutoSleep\unins000.exe`（C#版）
 
 卸载后，所有文件、计划任务、注册表项都会被删除，无残留。
 
@@ -270,7 +270,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 - 不依赖外部服务器：无需联网，完全本地运行
 - 卸载后无残留
 
-### 高级用户：手动编辑配置
+### 高级设置：手动编辑配置
 
 你可以直接编辑 `C:\ProgramData\AutoSleep\settings.json`，调整以下参数：
 
