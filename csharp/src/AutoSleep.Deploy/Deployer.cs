@@ -188,41 +188,39 @@ namespace AutoSleep.Deploy
                     WriteLog("备份 Inno 卸载键失败: " + ex.Message);
                 }
 
-                // ---- 新旧卸载器检测 ----
-                // 读注册表 UninstallString：Uninstall.exe = 旧版（现状直接调用）；
-                // unins000.exe 或存在 "Inno Setup: App Path" 键 = 新版（静默调用，避免弹出卸载窗口）
+                // ---- 旧版卸载器检测 ----
+                // 兼容旧版：1.0.13 及更早（NSIS）安装的卸载器是 Uninstall.exe，负责杀进程、
+                // 删快捷方式/计划任务/注册表并清空目录，升级时必须调用它才能干净卸载旧版。
+                // 注意：Inno 在运行 Deployer 前已把本次安装的 unins000.exe 与 {AppId}_is1
+                // 卸载键写入安装目录。不能以 {AppId}_is1 为准去调用 unins000：它是本次安装
+                // 自带的卸载器，不认识旧版文件、不杀进程，且其卸载记录包含 {tmp}\AutoSleepInstall
+                // （Deployer 正运行其中的目录），调用会导致卸载器删除被占用文件而挂起
+                // （1.0.13 检查更新升级异常即为此因）。因此只检测旧版卸载器；找不到时由
+                // Deployer 自行清理（Inno 版升级同样适用：旧版 unins000 与 {AppId}_is1 键
+                // 会被本次安装覆盖/重写，无需先卸载）。
                 string uninstallCmd = null;
                 bool innoMarker = false;
-                try
+
+                // 1) 目录中的旧版卸载器（最可靠标志：1.0.13 及更早版本存在 Uninstall.exe）
+                string legacyUninstaller = Path.Combine(InstallDir, "Uninstall.exe");
+                if (File.Exists(legacyUninstaller))
                 {
-                    // 旧版（Deployer/NSIS 装）：卸载键 Uninstall\AutoSleep
-                    using (var key = Registry.LocalMachine.OpenSubKey(RegUninstallPath))
+                    uninstallCmd = legacyUninstaller;
+                    WriteLog("检测到旧版卸载器（Uninstall.exe），将调用以兼容旧版");
+                }
+                else
+                {
+                    // 2) 旧注册表键（1.0.13/NSIS 安装时写入）
+                    try
                     {
-                        if (key != null)
+                        using (var key = Registry.LocalMachine.OpenSubKey(RegUninstallPath))
                         {
-                            uninstallCmd = key.GetValue("UninstallString") as string;
-                            innoMarker = key.GetValue("Inno Setup: App Path") != null;
+                            if (key != null)
+                                uninstallCmd = key.GetValue("UninstallString") as string;
                         }
                     }
+                    catch { }
                 }
-                catch { }
-                try
-                {
-                    // 新版（Inno Setup 装）：卸载键为 {AppId}_is1，必须与 Setup.iss 的 AppId 一致
-                    using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1"))
-                    {
-                        if (key != null)
-                        {
-                            string innoCmd = key.GetValue("UninstallString") as string;
-                            if (!string.IsNullOrEmpty(innoCmd))
-                            {
-                                uninstallCmd = innoCmd;
-                                innoMarker = true;
-                            }
-                        }
-                    }
-                }
-                catch { }
 
                 string[] cmdParts = string.IsNullOrEmpty(uninstallCmd) ? new string[0] : SplitCommandLine(uninstallCmd);
                 string uninstallerPath = cmdParts.Length > 0 ? cmdParts[0] : null;
