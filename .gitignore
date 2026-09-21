@@ -1,0 +1,14 @@
+# 编译产物
+bin/
+obj/
+*.bak
+
+# IDE
+.idea/
+
+# 本地生成的安装包产物
+csharp/installer/AutoSleep_Setup_Win7_Net40.exe
+installer/AutoSleep_Setup.exe
+installer/Uninstall.exe
+src/Uninstall.exe
+*.sha256

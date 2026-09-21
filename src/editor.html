@@ -203,20 +203,42 @@
 
         // ---- 条件显示名称映射 ----
         const CONDITION_DISPLAY = {
-            'CPU': 'CPU 使用率低于阈值',
-            'GPU': 'GPU 使用率低于阈值',
-            'Disk': '磁盘读写速度低于阈值',
-            'Network': '网络流量低于阈值',
-            'User': '用户无操作（超过3秒）',
+            'CPU': 'CPU 使用率',
+            'GPU': 'GPU 使用率',
+            'Disk': '磁盘读写速度',
+            'Network': '网络流量',
+            'User': '用户无操作时间',
             'Process': '白名单进程未运行',
             'TimeWindow': '当前在时间窗口内'
         };
+
+        // ---- 节点级数值条件：单位 / 比较方向 / 默认值（来自全局阈值） ----
+        let CURRENT_CONFIG = null;   // 由 /config.js 加载后赋值，供节点默认值使用
+        const NUMERIC_UNIT = { 'CPU': '%', 'GPU': '%', 'Disk': 'KB/s', 'Network': 'KB/s', 'User': '秒' };
+        const NUMERIC_DIR = { 'CPU': '低于', 'GPU': '低于', 'Disk': '低于', 'Network': '低于', 'User': '超过' };
+        function conditionDefaultValue(cond) {
+            const c = CURRENT_CONFIG || {};
+            switch (cond) {
+                case 'CPU': return c.CpuThreshold ?? 30;
+                case 'GPU': return c.GpuThreshold ?? 30;
+                case 'Disk': return c.DiskThresholdKBps ?? 10240;
+                case 'Network': return c.NetworkThresholdKBps ?? 1024;
+                case 'User': return 3;
+                default: return null;
+            }
+        }
 
         // ---------- 定义块 ----------
         CONDITIONS.forEach(cond => {
             Blockly.Blocks[`condition_${cond}`] = {
                 init: function() {
                     this.appendDummyInput().appendField(CONDITION_DISPLAY[cond] || (cond + ' 低于阈值'));
+                    if (NUMERIC_UNIT[cond]) {
+                        this.appendDummyInput()
+                            .appendField(NUMERIC_DIR[cond] || '阈值')
+                            .appendField(new Blockly.FieldNumber(conditionDefaultValue(cond), 0, 999999, 1), 'VALUE')
+                            .appendField(NUMERIC_UNIT[cond]);
+                    }
                     this.setOutput(true, 'Condition');
                     this.setColour(120);
                     this.setTooltip('判断 ' + cond + ' 条件是否满足');
@@ -318,7 +340,14 @@
 
             if (type.startsWith('condition_')) {
                 const cond = type.replace('condition_', '');
-                return { type: 'condition', condition: cond };
+                const json = { type: 'condition', condition: cond };
+                // 保存阶段归一化：节点未填/非法数值时补全局默认值，保证执行阶段统一走节点数值
+                if (NUMERIC_UNIT[cond]) {
+                    const raw = block.getFieldValue('VALUE');
+                    const num = (raw === null || raw === '' || raw === undefined) ? NaN : Number(raw);
+                    json.value = isNaN(num) ? conditionDefaultValue(cond) : num;
+                }
+                return json;
             }
 
             if (type.startsWith('logic_')) {
@@ -352,7 +381,7 @@
                 }
                 const thenValue = thenChildren.length === 1 ? thenChildren[0] : { type: 'sequence', actions: thenChildren };
 
-                // 检测 elif/else 链
+                // 检测 elif/else 链（内层 if 也需要）
                 let elifList = [];
                 let elseBlock = null;
                 let nextNode = block.getNextBlock();
@@ -744,6 +773,12 @@
                     const block = workspace.newBlock(`condition_${cond}`);
                     block.initSvg();
                     block.render();
+                    if (NUMERIC_UNIT[cond] && block.getField('VALUE')) {
+                        const v = (jsonData.value === undefined || jsonData.value === null || isNaN(Number(jsonData.value)))
+                            ? conditionDefaultValue(cond)
+                            : Number(jsonData.value);
+                        block.setFieldValue(String(v), 'VALUE');
+                    }
                     return block;
                 }
 
@@ -818,6 +853,7 @@
                             try {
                                 const config = eval('(' + match[1] + ')');
                                 console.log('config loaded:', config);
+                                CURRENT_CONFIG = config;
                                 updateStatusBar(config);
                                 if (config.CustomLogicTree && config.CustomLogicTree.type === 'program') {
                                     console.log('Loading existing tree...');

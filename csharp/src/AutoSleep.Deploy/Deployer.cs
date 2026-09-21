@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -13,14 +13,25 @@ namespace AutoSleep.Deploy
         private const string TaskName = "AutoSleep";
         private const string ShortcutName = "AutoSleep 设置";
         private const string RegUninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AutoSleep";
+        // Inno 卸载键（必须与 Setup.iss 的 AppId 一致）：64 位视图由 Inno 在安装阶段创建；
+        // 升级时 Deployer 静默调用的卸载器会把它删除，须备份-恢复；32 位视图键为早期
+        // 32 位模式安装遗留，必须清理，否则控制面板/GeekUninstaller 出现 32 位残留条目。
+        private const string RegInnoUninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1";
+        private const string RegInnoUninstall32Path = @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1";
         private const string ConfigFile = InstallDir + @"\settings.json";
         private const string LogFile = InstallDir + @"\AutoSleep.log";
 
         private static string _logPath;
 
         [STAThread]
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
+            bool silent = false;
+            foreach (string a in args)
+            {
+                if (a.Equals("/silent", StringComparison.OrdinalIgnoreCase)) silent = true;
+            }
+
             _logPath = Path.Combine(Path.GetTempPath(), "AutoSleepDeploy.log");
             if (File.Exists(_logPath)) File.Delete(_logPath);
 
@@ -38,9 +49,31 @@ namespace AutoSleep.Deploy
                 };
                 try { Process.Start(proc); }
                 catch { WriteLog("用户拒绝提权，退出。"); }
-                return;
+                return 1;
             }
             WriteLog("已获得管理员权限。");
+
+            // ---- 暂存源文件 ----
+            // Deployer 从 Inno 临时目录 {tmp}\AutoSleepInstall 运行；本流程调用的卸载器
+            // （unins000.exe /VERYSILENT）会清理 Inno 安装会话的临时目录，导致源文件丢失。
+            // 先把源文件复制到安全暂存目录，后续复制一律从暂存目录取。
+            string stagingDir = Path.Combine(Path.GetTempPath(), "AutoSleepDeploySrc");
+            string deploySourceDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+            WriteLog("暂存源文件: " + deploySourceDir + " -> " + stagingDir);
+            try
+            {
+                if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
+                Directory.CreateDirectory(stagingDir);
+                foreach (string f in Directory.GetFiles(deploySourceDir))
+                {
+                    File.Copy(f, Path.Combine(stagingDir, Path.GetFileName(f)), true);
+                }
+                WriteLog("源文件暂存完成（" + Directory.GetFiles(stagingDir).Length + " 个文件）");
+            }
+            catch (Exception ex)
+            {
+                WriteLog("源文件暂存失败: " + ex.Message);
+            }
 
             // ---- 环境检测 ----
             WriteLog("----- 环境检测 -----");
@@ -81,14 +114,21 @@ namespace AutoSleep.Deploy
             catch
             {
                 WriteLog("目录 " + InstallDir + " 不可写，请检查权限。");
-                MessageBox.Show("安装目录不可写，请以管理员身份运行。", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
+                if (!silent)
+                    MessageBox.Show("安装目录不可写，请以管理员身份运行。", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
             }
 
             // ---- 检测升级 ----
             bool isUpgrade = File.Exists(ConfigFile);
             string logBackupPath = Path.Combine(Path.GetTempPath(), "AutoSleep.log.bak");
             Dictionary<string, object> oldConfig = null;
+            // Inno 卸载器备份（方法级作用域，供升级卸载后恢复）
+            string uninsBackupExe = Path.Combine(Path.GetTempPath(), "AutoSleep.unins000.exe.bak");
+            string uninsBackupDat = Path.Combine(Path.GetTempPath(), "AutoSleep.unins000.dat.bak");
+            bool uninsBackedUp = false;
+            // Inno 卸载键（64 位视图）备份：静默调用的卸载器会删除该键，须卸载前备份、部署后恢复
+            Dictionary<string, object> innoUninstallValues = null;
 
             if (isUpgrade)
             {
@@ -112,13 +152,99 @@ namespace AutoSleep.Deploy
                     WriteLog("无法读取旧配置，将使用默认配置");
                 }
 
-                string uninstallExe = Path.Combine(InstallDir, "Uninstall.exe");
-                if (File.Exists(uninstallExe))
+                // 备份 Inno 卸载器（若存在）：Inno 在运行 Deployer 前已把 unins000.exe 释放到安装目录，
+                // 旧版 Uninstall.exe 清目录会把它一并删除，须在卸载前备份、重建后恢复
+                try
                 {
-                    WriteLog("正在执行卸载程序...");
+                    string uninsExe = Path.Combine(InstallDir, "unins000.exe");
+                    string uninsDat = Path.Combine(InstallDir, "unins000.dat");
+                    if (File.Exists(uninsExe))
+                    {
+                        File.Copy(uninsExe, uninsBackupExe, true);
+                        if (File.Exists(uninsDat)) File.Copy(uninsDat, uninsBackupDat, true);
+                        uninsBackedUp = true;
+                        WriteLog("已备份 Inno 卸载器");
+                    }
+                }
+                catch { }
+
+                // 备份 Inno 卸载键（64 位视图）：卸载器卸载时会删除此键，须在卸载前备份、部署后恢复。
+                // Deployer 为 64 位进程，访问 HKLM\SOFTWARE 即 64 位视图，无需 RegistryView 参数
+                try
+                {
+                    using (var key = Registry.LocalMachine.OpenSubKey(RegInnoUninstallPath))
+                    {
+                        if (key != null)
+                        {
+                            innoUninstallValues = new Dictionary<string, object>();
+                            foreach (string name in key.GetValueNames())
+                                innoUninstallValues[name] = key.GetValue(name);
+                            WriteLog("已备份 Inno 卸载键（" + innoUninstallValues.Count + " 个值）");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteLog("备份 Inno 卸载键失败: " + ex.Message);
+                }
+
+                // ---- 新旧卸载器检测 ----
+                // 读注册表 UninstallString：Uninstall.exe = 旧版（现状直接调用）；
+                // unins000.exe 或存在 "Inno Setup: App Path" 键 = 新版（静默调用，避免弹出卸载窗口）
+                string uninstallCmd = null;
+                bool innoMarker = false;
+                try
+                {
+                    // 旧版（Deployer/NSIS 装）：卸载键 Uninstall\AutoSleep
+                    using (var key = Registry.LocalMachine.OpenSubKey(RegUninstallPath))
+                    {
+                        if (key != null)
+                        {
+                            uninstallCmd = key.GetValue("UninstallString") as string;
+                            innoMarker = key.GetValue("Inno Setup: App Path") != null;
+                        }
+                    }
+                }
+                catch { }
+                try
+                {
+                    // 新版（Inno Setup 装）：卸载键为 {AppId}_is1，必须与 Setup.iss 的 AppId 一致
+                    using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1"))
+                    {
+                        if (key != null)
+                        {
+                            string innoCmd = key.GetValue("UninstallString") as string;
+                            if (!string.IsNullOrEmpty(innoCmd))
+                            {
+                                uninstallCmd = innoCmd;
+                                innoMarker = true;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                string[] cmdParts = string.IsNullOrEmpty(uninstallCmd) ? new string[0] : SplitCommandLine(uninstallCmd);
+                string uninstallerPath = cmdParts.Length > 0 ? cmdParts[0] : null;
+                string uninstallerArgs = cmdParts.Length > 1 ? string.Join(" ", cmdParts, 1, cmdParts.Length - 1) : "";
+
+                if (!string.IsNullOrEmpty(uninstallerPath) && File.Exists(uninstallerPath))
+                {
+                    string fileName = Path.GetFileName(uninstallerPath);
+                    bool isNewUninstaller = innoMarker || fileName.Equals("unins000.exe", StringComparison.OrdinalIgnoreCase);
+                    if (isNewUninstaller)
+                    {
+                        uninstallerArgs = (uninstallerArgs + " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART").Trim();
+                        WriteLog("检测到新版卸载器（Inno Setup），静默调用: " + uninstallerPath + " " + uninstallerArgs);
+                    }
+                    else
+                    {
+                        WriteLog("正在执行旧版卸载程序: " + uninstallerPath + " " + uninstallerArgs);
+                    }
                     var p = Process.Start(new ProcessStartInfo
                     {
-                        FileName = uninstallExe,
+                        FileName = uninstallerPath,
+                        Arguments = uninstallerArgs,
                         WindowStyle = ProcessWindowStyle.Hidden,
                         UseShellExecute = false,
                         CreateNoWindow = true
@@ -126,6 +252,75 @@ namespace AutoSleep.Deploy
                     if (p != null) p.WaitForExit();
                     System.Threading.Thread.Sleep(2000);
                     WriteLog("卸载完成");
+                }
+                else if (string.IsNullOrEmpty(uninstallerPath) && File.Exists(Path.Combine(InstallDir, "Uninstall.exe")))
+                {
+                    // 回退：注册表读不到但安装目录存在旧版卸载器
+                    WriteLog("正在执行旧版卸载程序（目录回退）...");
+                    var p = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = Path.Combine(InstallDir, "Uninstall.exe"),
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    if (p != null) p.WaitForExit();
+                    System.Threading.Thread.Sleep(2000);
+                    WriteLog("卸载完成");
+                }
+                else
+                {
+                    // 检测不到任何卸载器（注册表无键、目录无 Uninstall.exe）：
+                    // 由 Deployer 自行清理旧版残留（杀进程/删计划任务/删快捷方式/清目录），
+                    // 保证升级路径完全不依赖外部卸载程序
+                    WriteLog("未检测到旧版卸载器，由 Deployer 自行清理旧版残留...");
+                    try
+                    {
+                        foreach (var proc in Process.GetProcessesByName("AutoSleep")) proc.Kill();
+                        foreach (var proc in Process.GetProcessesByName("AutoSleepSettings")) proc.Kill();
+                        foreach (var proc in Process.GetProcessesByName("AutoSleepServer")) proc.Kill();
+                        WriteLog("已终止 AutoSleep 相关进程");
+                    }
+                    catch { }
+                    try
+                    {
+                        var p = Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "schtasks.exe",
+                            Arguments = "/delete /tn \"AutoSleep\" /f",
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        });
+                        if (p != null) p.WaitForExit();
+                        WriteLog("已删除计划任务 'AutoSleep'");
+                    }
+                    catch { }
+                    try
+                    {
+                        string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), ShortcutName + ".lnk");
+                        if (File.Exists(lnk)) File.Delete(lnk);
+                        WriteLog("已删除桌面快捷方式");
+                    }
+                    catch { }
+                    try
+                    {
+                        if (Directory.Exists(InstallDir))
+                        {
+                            foreach (string f in Directory.GetFiles(InstallDir))
+                            {
+                                try { File.Delete(f); } catch { }
+                            }
+                            foreach (string d in Directory.GetDirectories(InstallDir))
+                            {
+                                try { Directory.Delete(d, true); } catch { }
+                            }
+                            WriteLog("已清空安装目录");
+                        }
+                    }
+                    catch { }
+                    System.Threading.Thread.Sleep(2000);
+                    WriteLog("旧版清理完成");
                 }
             }
 
@@ -135,10 +330,10 @@ namespace AutoSleep.Deploy
 
             // ---- 复制文件 ----
             WriteLog("----- 复制文件 -----");
-            string sourceDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+            string sourceDir = stagingDir;   // 从安全暂存目录取源文件
             string[] filesToCopy = {
                 "AutoSleep.exe", "AutoSleepSettings.exe", "AutoSleepServer.exe",
-                "Uninstall.exe", "README.txt", "editor.html",
+                "README.txt", "editor.html",
                 "AutoSleep.ico"
             };
             foreach (string file in filesToCopy)
@@ -280,6 +475,52 @@ namespace AutoSleep.Deploy
                 catch { }
             }
 
+            // ---- 恢复 Inno 卸载器备份 ----
+            // 新的 unins000.exe 由 Inno 安装结束时写入覆盖，这里仅保证升级期间不被旧卸载器删掉
+            if (uninsBackedUp)
+            {
+                try
+                {
+                    if (File.Exists(uninsBackupExe))
+                    {
+                        File.Copy(uninsBackupExe, Path.Combine(InstallDir, "unins000.exe"), true);
+                        if (File.Exists(uninsBackupDat))
+                            File.Copy(uninsBackupDat, Path.Combine(InstallDir, "unins000.dat"), true);
+                        WriteLog("Inno 卸载器备份已恢复");
+                    }
+                }
+                catch { }
+                try { File.Delete(uninsBackupExe); File.Delete(uninsBackupDat); } catch { }
+            }
+
+            // ---- 恢复 Inno 卸载键 + 清理 32 位残留 ----
+            // 升级时静默调用的卸载器删除了 64 位视图卸载键，恢复之，保证控制面板/GeekUninstaller
+            // 有 64 位条目（UninstallString 指向的路径不变，值依然有效）；
+            // 同时删除早期 32 位模式安装遗留的 WOW6432Node 视图键，避免出现 32 位残留条目。
+            // 该清理对所有安装场景执行（升级/全新安装）。
+            if (innoUninstallValues != null && innoUninstallValues.Count > 0)
+            {
+                try
+                {
+                    using (var key = Registry.LocalMachine.CreateSubKey(RegInnoUninstallPath))
+                    {
+                        foreach (var kv in innoUninstallValues)
+                            key.SetValue(kv.Key, kv.Value);
+                    }
+                    WriteLog("Inno 卸载键已恢复（64 位视图）");
+                }
+                catch (Exception ex)
+                {
+                    WriteLog("恢复 Inno 卸载键失败: " + ex.Message);
+                }
+            }
+            try
+            {
+                Registry.LocalMachine.DeleteSubKeyTree(RegInnoUninstall32Path, false);
+                WriteLog("已清理 32 位视图残留卸载键");
+            }
+            catch { }
+
             // ---- 创建桌面快捷方式 ----
             WriteLog("----- 创建快捷方式 -----");
             try
@@ -369,30 +610,11 @@ namespace AutoSleep.Deploy
                 WriteLog("创建计划任务失败: " + ex.Message);
             }
 
-            // ---- 写入注册表卸载项 ----
-            WriteLog("----- 写入注册表 -----");
-            try
-            {
-                using (var key = Registry.LocalMachine.CreateSubKey(RegUninstallPath))
-                {
-                    if (key != null)
-                    {
-                        key.SetValue("DisplayName", "AutoSleep 智能休眠工具");
-                        key.SetValue("DisplayVersion", "1.0.13");
-                        key.SetValue("Publisher", "Cesium-developer");
-                        key.SetValue("InstallLocation", InstallDir);
-                        key.SetValue("DisplayIcon", Path.Combine(InstallDir, "AutoSleepSettings.exe"));
-                        key.SetValue("UninstallString", Path.Combine(InstallDir, "Uninstall.exe"));
-                        key.SetValue("NoModify", 1, RegistryValueKind.DWord);
-                        key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-                    }
-                }
-                WriteLog("注册表卸载项已写入");
-            }
-            catch (Exception ex)
-            {
-                WriteLog("写入注册表失败: " + ex.Message);
-            }
+            // ---- 注册表卸载项 ----
+            // 卸载项由 Inno Setup 统一管理（标准卸载器 unins000.exe、卸载键 {AppId}_is1），
+            // Deployer 不再写入，避免控制面板出现重复卸载条目。
+            WriteLog("----- 注册表 -----");
+            WriteLog("卸载项由 Inno Setup 管理（跳过）");
 
             // ---- 启动服务 ----
             WriteLog("----- 启动服务 -----");
@@ -419,8 +641,31 @@ namespace AutoSleep.Deploy
 
             WriteLog("===== 部署完成 =====");
 
-            Console.WriteLine("按 Enter 退出...");
-            Console.ReadLine();
+            if (!silent)
+            {
+                Console.WriteLine("按 Enter 退出...");
+                Console.ReadLine();
+            }
+            return 0;
+        }
+
+        // 简单命令行拆分：支持引号包裹的路径（Inno 的 UninstallString 带引号）
+        static string[] SplitCommandLine(string cmd)
+        {
+            var parts = new List<string>();
+            bool inQuote = false;
+            string cur = "";
+            foreach (char c in cmd)
+            {
+                if (c == '"') { inQuote = !inQuote; }
+                else if (c == ' ' && !inQuote)
+                {
+                    if (cur.Length > 0) { parts.Add(cur); cur = ""; }
+                }
+                else cur += c;
+            }
+            if (cur.Length > 0) parts.Add(cur);
+            return parts.ToArray();
         }
 
         static bool IsAdministrator()

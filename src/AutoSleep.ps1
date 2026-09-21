@@ -89,11 +89,13 @@ $logRetentionDays     = $config.LogRetentionDays
 $cooldownUntil = (Get-Date).AddDays(-1)
 
 $sleepSeconds  = [Math]::Max(1, $config.Interval - 2)
+$interval      = $config.Interval
 
 $elapsed = 0
 $lastCheckTime = Get-Date
 $lastLogTime = Get-Date
 $lastRotationCheck = Get-Date
+$lastTick = [Environment]::TickCount64   # 单调时钟基线：真实睡眠(S3/S4)时冻结、墙钟继续走，用于区分真唤醒与有意睡眠
 
 Write-Host "Monitoring started. Idle for $durationMin minute(s) will trigger $powerAction."
 
@@ -209,124 +211,181 @@ function Invoke-LogRotation {
     }
 }
 
-# ---- 自定义逻辑求值 ----
+# ---- 自定义逻辑求值（对齐 C# RuleEngine：节点级数值 + FailedConditions 收集）----
 function Evaluate-CustomLogic {
     param(
         [object]$Tree,
-        [hashtable]$Values
+        [hashtable]$Values,
+        [hashtable]$Metrics = $null,
+        [System.Collections.ArrayList]$Failed = $null
     )
-    if ($null -eq $Tree) { return @{ idle = $false; action = "none" } }
+    if ($null -eq $Failed) { $Failed = New-Object System.Collections.ArrayList }
+    if ($null -eq $Tree) { return @{ idle = $false; action = "none"; failed = $Failed } }
 
     switch ($Tree.type) {
         "program" {
-            if (-not $Tree.actions) { return @{ idle = $false; action = "none" } }
-            $result = @{ idle = $false; action = "none" }
+            if (-not $Tree.actions) { return @{ idle = $false; action = "none"; failed = $Failed } }
+            $result = @{ idle = $false; action = "none"; failed = $Failed }
             foreach ($action in $Tree.actions) {
-                $result = Evaluate-CustomLogic -Tree $action -Values $Values
-                # 如果某个 action 返回了非 "none" 的动作，可以提前返回（或者继续执行后续）
-                # 但通常 program 按顺序执行，我们返回最后一个的结果
+                $result = Evaluate-CustomLogic -Tree $action -Values $Values -Metrics $Metrics -Failed $Failed
             }
             return $result
         }
         "condition" {
             $cond = $Tree.condition
-            if ($Values.ContainsKey($cond)) {
-                return @{ idle = [bool]$Values[$cond]; action = "none" }
+            $idle = $false
+            # 节点自带数值（编辑器保存阶段已补齐）：原始指标 vs 节点阈值
+            if ($null -ne $Tree.value -and $null -ne $Metrics -and $Metrics.ContainsKey($cond)) {
+                $threshold = 0.0
+                if (-not [double]::TryParse($Tree.value, [ref]$threshold)) {
+                    return @{ idle = $false; action = "none"; failed = $Failed }
+                }
+                $metric = [double]$Metrics[$cond]
+                # User 是"无操作秒数 >= 阈值"才空闲；其余资源类都是"低于阈值"才空闲
+                if ($cond -eq "User") { $idle = ($metric -ge $threshold) } else { $idle = ($metric -lt $threshold) }
+            } elseif ($Values.ContainsKey($cond)) {
+                $idle = [bool]$Values[$cond]
+            } else {
+                return @{ idle = $false; action = "none"; failed = $Failed }
             }
-            return @{ idle = $false; action = "none" }
+            # 收集失败叶子条件（仅供日志原因行；判定结果不受影响）
+            if (-not $idle -and -not $Failed.Contains($cond)) { [void]$Failed.Add($cond) }
+            return @{ idle = $idle; action = "none"; failed = $Failed }
         }
         "logic" {
             $op = $Tree.operator
             $children = $Tree.children
             if ($op -eq "AND") {
+                $allIdle = $true
                 foreach ($child in $children) {
-                    $childResult = Evaluate-CustomLogic -Tree $child -Values $Values
-                    if (-not $childResult.idle) {
-                        return @{ idle = $false; action = "none" }
-                    }
+                    $childResult = Evaluate-CustomLogic -Tree $child -Values $Values -Metrics $Metrics -Failed $Failed
+                    if (-not $childResult.idle) { $allIdle = $false }
                 }
-                return @{ idle = $true; action = "none" }
+                return @{ idle = $allIdle; action = "none"; failed = $Failed }
             } elseif ($op -eq "OR") {
+                $anyIdle = $false
                 foreach ($child in $children) {
-                    $childResult = Evaluate-CustomLogic -Tree $child -Values $Values
-                    if ($childResult.idle) {
-                        return @{ idle = $true; action = "none" }
-                    }
+                    $childResult = Evaluate-CustomLogic -Tree $child -Values $Values -Metrics $Metrics -Failed $Failed
+                    if ($childResult.idle) { $anyIdle = $true }
                 }
-                return @{ idle = $false; action = "none" }
+                return @{ idle = $anyIdle; action = "none"; failed = $Failed }
             } elseif ($op -eq "NOT") {
-                $childResult = Evaluate-CustomLogic -Tree $children[0] -Values $Values
-                return @{ idle = -not $childResult.idle; action = "none" }
+                $childResult = Evaluate-CustomLogic -Tree $children[0] -Values $Values -Metrics $Metrics -Failed $Failed
+                return @{ idle = -not $childResult.idle; action = "none"; failed = $Failed }
             }
-            return @{ idle = $false; action = "none" }
+            return @{ idle = $false; action = "none"; failed = $Failed }
         }
         "control" {
             # if 分支
             if ($Tree.condition) {
-                $condResult = Evaluate-CustomLogic -Tree $Tree.condition -Values $Values
+                $condResult = Evaluate-CustomLogic -Tree $Tree.condition -Values $Values -Metrics $Metrics -Failed $Failed
                 if ($condResult.idle) {
-                    if ($Tree.then -ne $null) {
-                        return Evaluate-CustomLogic -Tree $Tree.then -Values $Values
+                    if ($null -ne $Tree.then) {
+                        return Evaluate-CustomLogic -Tree $Tree.then -Values $Values -Metrics $Metrics -Failed $Failed
                     }
-                    return @{ idle = $true; action = "none" }
+                    return @{ idle = $true; action = "none"; failed = $Failed }
                 }
             }
             # elif 列表
             if ($Tree.elif -and $Tree.elif.Count -gt 0) {
                 foreach ($elif in $Tree.elif) {
-                    $elifCondResult = Evaluate-CustomLogic -Tree $elif.condition -Values $Values
+                    $elifCondResult = Evaluate-CustomLogic -Tree $elif.condition -Values $Values -Metrics $Metrics -Failed $Failed
                     if ($elifCondResult.idle) {
-                        if ($elif.then -ne $null) {
-                            return Evaluate-CustomLogic -Tree $elif.then -Values $Values
+                        if ($null -ne $elif.then) {
+                            return Evaluate-CustomLogic -Tree $elif.then -Values $Values -Metrics $Metrics -Failed $Failed
                         }
-                        return @{ idle = $true; action = "none" }
+                        return @{ idle = $true; action = "none"; failed = $Failed }
                     }
                 }
             }
             # else 分支
-            if ($Tree.else -ne $null) {
-                return Evaluate-CustomLogic -Tree $Tree.else -Values $Values
+            if ($null -ne $Tree.else) {
+                return Evaluate-CustomLogic -Tree $Tree.else -Values $Values -Metrics $Metrics -Failed $Failed
             }
-            return @{ idle = $false; action = "none" }
+            return @{ idle = $false; action = "none"; failed = $Failed }
         }
         "action" {
-            # 根据动作类型返回不同的结果
             switch ($Tree.action) {
-                "reset_timer" {
-                    # 重置计时器：返回 idle=false，但需要主循环执行重置操作
-                    return @{ idle = $false; action = "reset_timer" }
-                }
-                "continue_timer" {
-                    # 继续计时：返回 idle=true，表示条件满足且应该累加
-                    return @{ idle = $true; action = "continue_timer" }
-                }
-                "sleep" {
-                    # 立即睡眠：返回 idle=true，但主循环应该特殊处理
-                    return @{ idle = $true; action = "sleep" }
-                }
-                "nothing" {
-                    # 什么都不做：不重置计时器，也不累加
-                    return @{ idle = $false; action = "nothing" }
-                }
-                default {
-                    # 未知动作，默认当作 continue_timer
-                    return @{ idle = $true; action = "continue_timer" }
-                }
+                "reset_timer"    { return @{ idle = $false; action = "reset_timer"; failed = $Failed } }
+                "continue_timer" { return @{ idle = $true;  action = "continue_timer"; failed = $Failed } }
+                "sleep"          { return @{ idle = $true;  action = "sleep"; failed = $Failed } }
+                "nothing"        { return @{ idle = $false; action = "nothing"; failed = $Failed } }
+                default          { return @{ idle = $true;  action = "continue_timer"; failed = $Failed } }
             }
         }
         "sequence" {
-            if (-not $Tree.actions) { return @{ idle = $false; action = "none" } }
-            $result = @{ idle = $false; action = "none" }
+            if (-not $Tree.actions) { return @{ idle = $false; action = "none"; failed = $Failed } }
+            $result = @{ idle = $false; action = "none"; failed = $Failed }
             foreach ($action in $Tree.actions) {
-                $result = Evaluate-CustomLogic -Tree $action -Values $Values
+                $result = Evaluate-CustomLogic -Tree $action -Values $Values -Metrics $Metrics -Failed $Failed
             }
             return $result
         }
         default {
             Write-Host "警告：未知节点类型 '$($Tree.type)'" -ForegroundColor Yellow
-            return @{ idle = $false; action = "none" }
+            return @{ idle = $false; action = "none"; failed = $Failed }
         }
     }
+}
+
+# ---- 统一日志输出层（节流 = 配置 Interval；Status/Idle 两套格式，字段集合一致）----
+function Add-Failed {
+    param([System.Collections.ArrayList]$List, [string]$Cond)
+    if (-not $List.Contains($Cond)) { [void]$List.Add($Cond) }
+}
+
+# 非计时周期：Status 首行 + 决策者原因行（映射回源码原有行族）+ 全指标详情行
+function Write-StatusBlock {
+    param(
+        [System.Collections.ArrayList]$Reasons,
+        [double]$Cpu, [double]$Gpu, [double]$NetKBps, [double]$DiskKBps,
+        [string]$RunningProc, [bool]$InWindow, [double]$IdleMs
+    )
+    if (($(Get-Date) - $script:lastLogTime).TotalSeconds -lt $script:interval) { return }
+    $ts = Get-Date -Format HH:mm:ss
+    Write-Host "$ts Status: Not idle (CPU: $($Cpu.ToString('F1'))%, GPU: $($Gpu.ToString('F1'))%)"
+
+    $cpuGpuReported = $false
+    $hasReason = $false
+    foreach ($cond in $Reasons) {
+        $hasReason = $true
+        switch ($cond) {
+            "User"       { Write-Host "$ts User activity detected, timer reset." }
+            "Network"    { Write-Host "$ts Network activity detected ($($NetKBps.ToString('F1')) KB/s), timer reset." }
+            "Disk"       { Write-Host "$ts Disk activity detected ($($DiskKBps.ToString('F1')) KB/s), timer reset." }
+            "Process"    { if ($RunningProc) { Write-Host "$ts Protected process pattern '$RunningProc' is running, timer reset." } }
+            "TimeWindow" { Write-Host "$ts Outside time window ($($script:timeWindowStart)-$($script:timeWindowEnd)), idle mode." }
+            "CPU"        { if (-not $cpuGpuReported) { Write-Host "$ts Load recovered, timer reset (CPU: $($Cpu.ToString('F1'))%, GPU: $($Gpu.ToString('F1'))%)"; $cpuGpuReported = $true } }
+            "GPU"        { if (-not $cpuGpuReported) { Write-Host "$ts Load recovered, timer reset (CPU: $($Cpu.ToString('F1'))%, GPU: $($Gpu.ToString('F1'))%)"; $cpuGpuReported = $true } }
+            default      { Write-Host "$ts Timer reset by custom logic" }
+        }
+    }
+    if (-not $hasReason) { Write-Host "$ts Timer reset by custom logic" }
+
+    # 详情行（与计时块同源生成）
+    if ($script:enableNetwork) { Write-Host "$ts Network: $($NetKBps.ToString('F1')) KB/s" }
+    if ($script:enableDisk) { Write-Host "$ts Disk: $($DiskKBps.ToString('F1')) KB/s" }
+    if ($script:enableProcess -and $script:protectedProcesses.Count -gt 0) { Write-Host "$ts Protected: $RunningProc" }
+    if ($script:enableTimeWindow) { Write-Host "$ts TimeWindow: $InWindow" }
+    Write-Host "$ts User: $([math]::Round($IdleMs / 1000))s"
+    $script:lastLogTime = Get-Date
+}
+
+# 计时周期：Idle 首行 + 全指标详情行（含 User，字段与状态块一致）
+function Write-IdleBlock {
+    param(
+        [double]$Elapsed, [double]$Cpu, [double]$Gpu, [double]$NetKBps, [double]$DiskKBps,
+        [string]$RunningProc, [bool]$InWindow, [double]$IdleMs
+    )
+    if (($(Get-Date) - $script:lastLogTime).TotalSeconds -lt $script:interval) { return }
+    $ts = Get-Date -Format HH:mm:ss
+    Write-Host "$ts Idle: $($Elapsed.ToString('F1')) sec (CPU: $($Cpu.ToString('F1'))%, GPU: $($Gpu.ToString('F1'))%)"
+    if ($script:enableNetwork) { Write-Host "$ts Network: $($NetKBps.ToString('F1')) KB/s" }
+    if ($script:enableDisk) { Write-Host "$ts Disk: $($DiskKBps.ToString('F1')) KB/s" }
+    if ($script:enableProcess -and $script:protectedProcesses.Count -gt 0) { Write-Host "$ts Protected: $RunningProc" }
+    if ($script:enableTimeWindow) { Write-Host "$ts TimeWindow: $InWindow" }
+    Write-Host "$ts User: $([math]::Round($IdleMs / 1000))s"
+    $script:lastLogTime = Get-Date
 }
 
 while ($true) {
@@ -334,9 +393,17 @@ while ($true) {
     $deltaSeconds = ($now - $lastCheckTime).TotalSeconds
     $lastCheckTime = $now
 
+    $tickNow = [Environment]::TickCount64
+    $tickDeltaSeconds = ($tickNow - $lastTick) / 1000.0
+    $lastTick = $tickNow
+
     # ---- 唤醒检测（永远优先） ----
-    if ($deltaSeconds -gt ($sleepSeconds * 5)) {
-        Write-Host "$(Get-Date -Format HH:mm:ss) Wake from sleep, resetting timer."
+    # 仅当墙钟前进量远大于单调时钟前进量时才判定为真实睡眠/挂起：
+    # 真实睡眠(S3/S4)时 tick 冻结而墙钟继续走（差≈睡眠时长）；
+    # 时间窗口分支的 60s 有意睡眠两者同步增长（差≈0），不会误判。
+    $suspendSeconds = $deltaSeconds - $tickDeltaSeconds
+    if ($suspendSeconds -gt 30) {
+        Write-Host "$(Get-Date -Format HH:mm:ss) Wake from sleep, resetting timer. (wall=$([math]::Round($deltaSeconds))s, tick=$([math]::Round($tickDeltaSeconds))s)"
         $elapsed = 0
         $lastCheckTime = $now
         Stop-Transcript -ErrorAction SilentlyContinue
@@ -366,17 +433,14 @@ while ($true) {
     # 采集所有原始数据（两条线路共用）
     # ============================================================
 
-    # ---- 时间窗口 ----
-    $inWindow = $true
-    if ($enableTimeWindow) {
-        $hour = (Get-Date).Hour
-        $start = $timeWindowStart
-        $end = $timeWindowEnd
-        if ($start -lt $end) {
-            $inWindow = ($hour -ge $start -and $hour -lt $end)
-        } else {
-            $inWindow = ($hour -ge $start -or $hour -lt $end)
-        }
+    # ---- 时间窗口（始终按配置 Start/End 计算；EnableTimeWindow 总开关只控制硬编码分支，不影响自定义逻辑里 TimeWindow 节点判定）----
+    $hour = (Get-Date).Hour
+    $start = $timeWindowStart
+    $end = $timeWindowEnd
+    if ($start -lt $end) {
+        $inWindow = ($hour -ge $start -and $hour -lt $end)
+    } else {
+        $inWindow = ($hour -ge $start -or $hour -lt $end)
     }
 
     # ---- 用户活动 ----
@@ -461,17 +525,30 @@ while ($true) {
     # 分支1：自定义逻辑（如果启用）
     # ============================================================
     if ($config.CustomLogicEnabled -and $config.CustomLogicTree) {
-        $customResult = Evaluate-CustomLogic -Tree $config.CustomLogicTree -Values @{
+        $failedReasons = New-Object System.Collections.ArrayList
+        $customValues = @{
             "CPU"        = $cpuIdle
             "GPU"        = $gpuIdle
             "Disk"       = $diskIdle
             "Network"    = $networkIdle
             "User"       = $userIdle
             "Process"    = $processIdle
-            "TimeWindow" = $timeWindowIdle
+            "TimeWindow" = $inWindow
         }
+        # 原始指标（供自定义逻辑节点级阈值使用；无节点数值时引擎回退上面的布尔）
+        $customMetrics = @{
+            "CPU"     = [double]$cpu
+            "GPU"     = [double]$gpu
+            "Disk"    = [double]$diskKBps
+            "Network" = [double]$netKBps
+            "User"    = [double]($idleMs / 1000)
+        }
+        $customResult = Evaluate-CustomLogic -Tree $config.CustomLogicTree -Values $customValues -Metrics $customMetrics
         $idle = $customResult.idle
         $action = $customResult.action
+        foreach ($fc in $customResult.failed) {
+            Add-Failed -List $failedReasons -Cond $fc
+        }
 
         if ($idle) {
             # 如果动作是 sleep，立即触发睡眠
@@ -483,35 +560,21 @@ while ($true) {
                 # 正常累加计时器（continue_timer 和其他动作）
                 $elapsed += $deltaSeconds
             }
-
-            if (($now - $lastLogTime).TotalSeconds -ge 5) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Idle: $([math]::Round($elapsed, 1)) sec (CPU: $($cpu.ToString('F1'))%, GPU: $($gpu.ToString('F1'))%)"
-                if ($enableNetwork) {
-                    Write-Host "$(Get-Date -Format HH:mm:ss) Network: $([math]::Round($netKBps, 1)) KB/s"
-                }
-                if ($enableDisk) {
-                    Write-Host "$(Get-Date -Format HH:mm:ss) Disk: $([math]::Round($diskKBps, 1)) KB/s"
-                }
-                if ($enableProcess -and $protectedProcesses.Count -gt 0) {
-                    Write-Host "$(Get-Date -Format HH:mm:ss) Protected: $($runningProc)"
-                }
-                if ($enableTimeWindow) {
-                    Write-Host "$(Get-Date -Format HH:mm:ss) TimeWindow: $inWindow"
-                }
-                $lastLogTime = $now
-            }
         } else {
             if ($action -eq "reset_timer") {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Timer reset by custom logic"
                 $elapsed = 0
             } elseif ($action -eq "nothing") {
                 # 什么都不做，保持 elapsed 不变
             } else {
-                if ($elapsed -gt 0) {
-                    Write-Host "$(Get-Date -Format HH:mm:ss) Load recovered, timer reset (CPU: $($cpu.ToString('F1'))%, GPU: $($gpu.ToString('F1'))%)"
-                }
                 $elapsed = 0
             }
+        }
+
+        # ---- 统一日志输出（节流 = 配置 Interval；两套格式字段集合一致）----
+        if ($idle) {
+            Write-IdleBlock -Elapsed $elapsed -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
+        } else {
+            Write-StatusBlock -Reasons $failedReasons -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
         }
 
         # ---- 触发 ----
@@ -554,7 +617,7 @@ while ($true) {
             Start-Sleep -Seconds 5
         }
 
-        Write-Host "Log Rotation checking time： $(((Get-Date) - $lastRotationCheck).TotalHours) hour (Default checking is 1 hour.)"
+        Write-Host "Log Rotation checking time: $(((Get-Date) - $lastRotationCheck).TotalHours.ToString('F2')) hour (Default checking is 1 hour.)"
         Start-Sleep -Seconds $sleepSeconds
         continue
     }
@@ -563,87 +626,61 @@ while ($true) {
     # 分支2：原有硬编码逻辑（自定义未启用时执行）
     # ============================================================
 
+    $failedReasons = New-Object System.Collections.ArrayList
+
     # ---- 时间窗口 ----
-    if ($enableTimeWindow) {
-        if (-not $inWindow) {
-            if ($elapsed -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Outside time window ($start-$end), idle mode."
-            }
-            $elapsed = 0
-            Start-Sleep -Seconds 60
-            continue
-        }
+    if ($enableTimeWindow -and -not $inWindow) {
+        Add-Failed -List $failedReasons -Cond "TimeWindow"
+        $elapsed = 0
+        Write-StatusBlock -Reasons $failedReasons -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
+        Start-Sleep -Seconds $sleepSeconds
+        continue
     }
 
     # ---- 用户活动 ----
-    if ($enableUser) {
-        if ($idleMs -lt 3000) {
-            if ($elapsed -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) User activity detected, timer reset."
-            }
-            $elapsed = 0
-            Start-Sleep -Seconds $sleepSeconds
-            continue
-        }
+    if ($enableUser -and $idleMs -lt 3000) {
+        Add-Failed -List $failedReasons -Cond "User"
+        $elapsed = 0
+        Write-StatusBlock -Reasons $failedReasons -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
+        Start-Sleep -Seconds $sleepSeconds
+        continue
     }
 
     # ---- 网络活动 ----
-    if ($enableNetwork) {
-        if ($netKBps -gt $networkThresholdKBps) {
-            if ($elapsed -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Network activity detected ($([math]::Round($netKBps, 1)) KB/s), timer reset."
-            }
-            $elapsed = 0
-        }
+    if ($enableNetwork -and $netKBps -gt $networkThresholdKBps) {
+        Add-Failed -List $failedReasons -Cond "Network"
+        $elapsed = 0
     }
 
     # ---- 磁盘活动 ----
-    if ($enableDisk) {
-        if ($diskKBps -gt $diskThresholdKBps) {
-            if ($elapsed -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Disk activity detected ($([math]::Round($diskKBps, 1)) KB/s), timer reset."
-            }
-            $elapsed = 0
-        }
+    if ($enableDisk -and $diskKBps -gt $diskThresholdKBps) {
+        Add-Failed -List $failedReasons -Cond "Disk"
+        $elapsed = 0
     }
 
     # ---- 进程白名单 ----
-    if ($enableProcess -and $protectedProcesses.Count -gt 0) {
-        if ($runningProc) {
-            if ($elapsed -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Protected process pattern '$runningProc' is running, timer reset."
-            }
-            $elapsed = 0
-        }
+    if ($enableProcess -and $protectedProcesses.Count -gt 0 -and $runningProc) {
+        Add-Failed -List $failedReasons -Cond "Process"
+        $elapsed = 0
     }
 
-    # ---- CPU / GPU 空闲判断（硬编码 AND） ----
+    # ---- CPU / GPU 空闲判断（硬编码 AND）----
     $idle = $cpuIdle -and $gpuIdle -and $diskIdle -and $networkIdle -and $userIdle -and $processIdle -and $timeWindowIdle
 
     if ($idle) {
         $elapsed += $deltaSeconds
-        if (($now - $lastLogTime).TotalSeconds -ge 5) {
-            Write-Host "$(Get-Date -Format HH:mm:ss) Idle: $([math]::Round($elapsed, 1)) sec (CPU: $($cpu.ToString('F1'))%, GPU: $($gpu.ToString('F1'))%)"
-            if ($enableNetwork) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Network: $([math]::Round($netKBps, 1)) KB/s"
-            }
-            if ($enableDisk) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Disk: $([math]::Round($diskKBps, 1)) KB/s"
-            }
-            if ($enableProcess -and $protectedProcesses.Count -gt 0) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) Protected: $($runningProc)"
-            }
-            if ($enableTimeWindow) {
-                Write-Host "$(Get-Date -Format HH:mm:ss) TimeWindow: $inWindow"
-            }
-            $lastLogTime = $now
-        }
     } else {
-        if ($elapsed -gt 0) {
-            Write-Host "$(Get-Date -Format HH:mm:ss) Load recovered, timer reset (CPU: $($cpu.ToString('F1'))%, GPU: $($gpu.ToString('F1'))%)"
-        }
+        # CPU/GPU 无独立违反分支，在此补充失败原因（其余已在上面收集）
+        if (-not $cpuIdle) { Add-Failed -List $failedReasons -Cond "CPU" }
+        if (-not $gpuIdle) { Add-Failed -List $failedReasons -Cond "GPU" }
         $elapsed = 0
-        $lastLogTime = $now
+    }
+
+    # ---- 统一日志输出（节流 = 配置 Interval；两套格式字段集合一致）----
+    if ($idle) {
+        Write-IdleBlock -Elapsed $elapsed -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
+    } else {
+        Write-StatusBlock -Reasons $failedReasons -Cpu $cpu -Gpu $gpu -NetKBps $netKBps -DiskKBps $diskKBps -RunningProc $runningProc -InWindow $inWindow -IdleMs $idleMs
     }
 
     # ---- 触发 ----
@@ -686,6 +723,6 @@ while ($true) {
         Start-Sleep -Seconds 5
     }
 
-    Write-Host "Log Rotation checking time： $(((Get-Date) - $lastRotationCheck).TotalHours) hour (Default checking is 1 hour.)"
+    Write-Host "Log Rotation checking time: $(((Get-Date) - $lastRotationCheck).TotalHours.ToString('F2')) hour (Default checking is 1 hour.)"
     Start-Sleep -Seconds $sleepSeconds
 }

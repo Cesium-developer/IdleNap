@@ -15,11 +15,13 @@ jobs:
       - name: 拉取代码
         uses: actions/checkout@v5
 
-      - name: 安装 NSIS
-        run: choco install nsis --version 3.09 -y
-
-      - name: 将 NSIS 添加到 PATH
-        run: echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+      - name: 确保 Inno Setup 存在
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
 
       - name: 编译 C# 项目（5 个）
         shell: cmd
@@ -29,12 +31,11 @@ jobs:
           %MSBUILD% src\AutoSleep.Core\AutoSleep.Core.csproj /p:Configuration=Release
           %MSBUILD% src\AutoSleep.Settings\AutoSleep.Settings.csproj /p:Configuration=Release
           %MSBUILD% src\AutoSleep.Server\AutoSleep.Server.csproj /p:Configuration=Release
-          %MSBUILD% src\AutoSleep.Uninstall\AutoSleep.Uninstall.csproj /p:Configuration=Release
           %MSBUILD% src\AutoSleep.Deploy\AutoSleep.Deploy.csproj /p:Configuration=Release
 
       - name: 编译安装程序
         working-directory: 'csharp/installer'
-        run: makensis Setup.nsi
+        run: ISCC Setup.iss
 
       - name: 移动安装程序到根目录
         run: move csharp\installer\AutoSleep_Setup_Win7_Net40.exe .\

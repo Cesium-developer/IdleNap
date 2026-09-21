@@ -8,12 +8,14 @@
 
 Windows 智能电源管理守护工具：多条件感知，任务完成后自动睡眠/休眠。
 
-**PowerShell 版（原版）**：适用于 Windows 10 1803+ / Windows 11。
-**C# 版**：适用于 Windows 7（需安装 .NET Framework 4.0），位于 `csharp/` 目录，功能与 PowerShell 版一致。
+**PowerShell 版（原版）**：适用于 Windows 10 1803+ / Windows 11，性能较差。
+**C# 版**：适用于 Windows 7（需安装 .NET Framework 4.0）及以上所有有.NET4.0的版本，位于 `csharp/` 目录，功能与 PowerShell 版一致，性能更好。
 
 ---
 
 ## 项目结构
+
+### Powershell版
 
 | 文件                        | 用途                                   |
 | ------------------------- | ------------------------------------ |
@@ -29,19 +31,19 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 ### C# 版（`csharp/`）
 
-|||
-|---|---|
-| `src/AutoSleep.Core/`    | 主监控程序（`AutoSleep.exe`）                 |
-| `src/AutoSleep.Settings/` | 设置界面（`AutoSleepSettings.exe`）           |
-| `src/AutoSleep.Server/`  | 自定义规则 API 服务（`AutoSleepServer.exe`）  |
-| `src/AutoSleep.Deploy/`  | 安装部署程序（`AutoSleepDeploy.exe`）         |
-| `src/AutoSleep.Uninstall/` | 卸载程序（`Uninstall.exe`）                 |
-| `installer/Setup.nsi`    | NSIS 安装包脚本（生成 `AutoSleep_Setup_Win7_Net40.exe`） |
-| `build.bat`              | 本地编译脚本                                   |
+|                           |                                                 |
+| ------------------------- | ----------------------------------------------- |
+| `src/AutoSleep.Core/`     | 主监控程序（`AutoSleep.exe`）                          |
+| `src/AutoSleep.Settings/` | 设置界面（`AutoSleepSettings.exe`）                   |
+| `src/AutoSleep.Server/`   | 自定义规则 API 服务（`AutoSleepServer.exe`）             |
+| `src/AutoSleep.Deploy/`   | 安装部署程序（`AutoSleepDeploy.exe`）                   |
+| `installer/Setup.iss`     | Inno 安装包脚本（生成 `AutoSleep_Setup_Win7_Net40.exe`） |
 
 ---
 
 ## 系统要求
+
+### Powershell版
 
 - Windows 10 1803+ / Windows 11
 - PowerShell 5.1+
@@ -49,13 +51,15 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 ### C# 版
 
-- Windows 7 SP1 及以上
-- .NET Framework 4.0（Win7 SP1 自带）
+- Windows 7及以上
+- .NET Framework 4.0
 - 管理员权限（部署和运行需要）
 
 ---
 
 ## 从源码构建安装包
+
+### Powershell版
 
 ### 前置条件
 
@@ -96,17 +100,10 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 #### 前置条件
 
-- .NET Framework 4.0 SDK 或 Visual Studio 2010+（MSBuild）
-- NSIS 3.x
+- .NET Framework 4.0
+- Inno Setup 6
 
 #### 构建步骤
-
-```cmd
-cd csharp
-build.bat
-```
-
-或手动执行：
 
 ```cmd
 cd csharp
@@ -121,58 +118,12 @@ C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe src\AutoSleep.Deploy\A
 
 ```cmd
 cd csharp\installer
-makensis Setup.nsi
+ISCC Setup.iss
 ```
 
 #### 最终产物
 
-- `AutoSleep_Setup_Win7_Net40.exe`：Win7 用户安装包（双击即可部署）
-
----
-
-## 部署原理
-
-`AutoSleep_Setup.exe` 的本质是 NSIS 自解压包，它会：
-
-1. 解压所有文件到 `%TEMP%\AutoSleepInstall`
-2. 以管理员权限执行 `Deploy-AutoSleep.ps1`
-3. `Deploy-AutoSleep.ps1` 完成：
-- 复制 `AutoSleep.ps1`、`Settings.ps1`、`README.txt`、`Uninstall.exe`、`ClearLog.ps1` 到 `C:\ProgramData\AutoSleep`
-- 生成默认 `settings.json`
-- 创建桌面快捷方式 “AutoSleep 设置”
-- 创建计划任务 `AutoSleep`（开机 + 登录启动）
-- 写入 `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\AutoSleep` 注册表项
-- 生成备用卸载脚本 `Uninstall-AutoSleep.ps1`
-- 验证部署（检查日志是否生成）
-4. NSIS 删除临时目录 `%TEMP%\AutoSleepInstall`
-
----
-
-## 卸载原理
-
-`Uninstall.exe`（由 `Uninstall.nsi` 生成）会：
-
-1. 解压 `Uninstall-AutoSleep.ps1` 到 `%TEMP%`
-2. 以管理员权限执行它
-3. `Uninstall-AutoSleep.ps1` 完成：
-- 强制结束所有 AutoSleep 后台进程
-- 删除桌面快捷方式
-- 删除计划任务 `AutoSleep`
-- 删除注册表卸载项（64 位和 32 位视图，`/reg:64` 和 `/reg:32`）
-- 删除安装目录下除 `Uninstall.exe` 自身外的所有文件
-- 启动后台批处理，删除 `Uninstall.exe` 自身和空目录
-4. 删除临时脚本 `Uninstall-AutoSleep.ps1`
-
----
-
-## 技术亮点
-
-- **绿色卸载**：无残留
-- **唤醒恢复**：唤醒后自动重置计时器，不需要手动重启程序
-- **多条件组合**：CPU / GPU / 网络 / 磁盘 / 用户活动 / 进程白名单 六重判断
-- **时间窗口**：支持指定时间段内才触发
-- **倒计时取消**：触发前弹出倒计时窗口，用户可取消本次睡眠
-- **可选休眠开关**：避免不必要的磁盘占用
+- `AutoSleep_Setup_Win7_Net40.exe`：C#版 用户安装包
 
 ---
 
@@ -300,7 +251,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 
 **Q：它会在后台产生网络流量吗？**
 
-不会。本工具只读取网卡计数器，不发送任何数据。
+日常运行时，本工具只读取网卡计数器，不发送任何数据。只在点击检查更新按键时向github仓库校验版本并且下载最新版安装包。
 
 ### 已知限制
 

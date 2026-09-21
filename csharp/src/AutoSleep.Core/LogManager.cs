@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text;
 
 namespace AutoSleep.Core
 {
@@ -9,6 +10,11 @@ namespace AutoSleep.Core
     public class LogManager
     {
         private const string LogFile = @"C:\ProgramData\AutoSleep\AutoSleep.log";
+
+        public LogManager()
+        {
+            EnsureBom();
+        }
 
         public void Write(string message)
         {
@@ -20,7 +26,44 @@ namespace AutoSleep.Core
                 string dir = Path.GetDirectoryName(LogFile);
                 if (!Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
-                File.AppendAllText(LogFile, line + Environment.NewLine);
+                AppendLine(line);
+            }
+            catch { }
+        }
+
+        // 日志统一以 UTF-8 带 BOM 写入：PowerShell Get-Content（默认按 ANSI 读）、记事本、浏览器都能正确显示中文
+        private void AppendLine(string line)
+        {
+            using (var fs = new FileStream(LogFile, FileMode.Append, FileAccess.Write, FileShare.Read))
+            {
+                if (fs.Length == 0)
+                    fs.Write(new byte[] { 0xEF, 0xBB, 0xBF }, 0, 3);
+                byte[] data = Encoding.UTF8.GetBytes(line + Environment.NewLine);
+                fs.Write(data, 0, data.Length);
+            }
+        }
+
+        // 旧日志可能是不带 BOM 的 UTF-8：启动时补写 BOM，避免中文被按 ANSI/GBK 读成乱码
+        private void EnsureBom()
+        {
+            try
+            {
+                if (!File.Exists(LogFile)) return;
+                bool hasBom;
+                using (var fs = new FileStream(LogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (fs.Length == 0) return;
+                    byte[] head = new byte[3];
+                    fs.Read(head, 0, 3);
+                    hasBom = (head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF);
+                }
+                if (hasBom) return;
+                byte[] content = File.ReadAllBytes(LogFile);
+                using (var outFs = new FileStream(LogFile, FileMode.Create, FileAccess.Write, FileShare.Read))
+                {
+                    outFs.Write(new byte[] { 0xEF, 0xBB, 0xBF }, 0, 3);
+                    outFs.Write(content, 0, content.Length);
+                }
             }
             catch { }
         }

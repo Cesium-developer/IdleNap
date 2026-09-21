@@ -279,10 +279,11 @@ if ($oldConfig) {
 
 # ---- 恢复日志 ----
 if ($isUpgrade -and (Test-Path $logBackupPath)) {
-    if (Test-Path $sourceLogFile) {
+    try {
+        Copy-Item -Path $logBackupPath -Destination $sourceLogFile -Force -ErrorAction Stop
         Write-Log "✅ 日志已恢复" -Color "Green"
-    } else {
-        Write-Log "⚠️ 恢复日志时捕获到异常：" -Color "Yellow"
+    } catch {
+        Write-Log "⚠️ 恢复日志失败：$_" -Color "Yellow"
     }
     Remove-Item $logBackupPath -Force -ErrorAction SilentlyContinue
 }
@@ -443,7 +444,7 @@ try {
     # 创建新子项
     $subKey = $uninstallKey.CreateSubKey("AutoSleep")
     $subKey.SetValue("DisplayName", "AutoSleep 智能休眠工具")
-    $subKey.SetValue("DisplayVersion", "1.0.13")
+    $subKey.SetValue("DisplayVersion", "1.0.14")
     $subKey.SetValue("Publisher", "Cesium-developer")
     $subKey.SetValue("InstallLocation", "C:\ProgramData\AutoSleep")
     $subKey.SetValue("UninstallString", "C:\ProgramData\AutoSleep\Uninstall.exe")

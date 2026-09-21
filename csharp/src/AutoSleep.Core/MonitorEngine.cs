@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace AutoSleep.Core
 {
@@ -17,6 +18,10 @@ namespace AutoSleep.Core
         private DateTime _lastLogTime;
         private DateTime _lastRotationCheck;
         private DateTime _cooldownUntil;
+
+        // 单调时钟（毫秒）：真实睡眠(S3/S4)时该计数器冻结、墙钟继续前进，用于区分"真唤醒"与"有意睡眠/慢迭代"
+        [DllImport("kernel32.dll")]
+        private static extern ulong GetTickCount64();
 
         public MonitorEngine(ConfigManager config)
         {
@@ -39,6 +44,7 @@ namespace AutoSleep.Core
             DateTime lastCheckTime = DateTime.Now;
             // 原版减2是补偿 PowerShell 启动延迟，C# 不需要
             int sleepSeconds = _config.Interval;
+            ulong lastTick = GetTickCount64();
 
             while (true)
             {
@@ -46,10 +52,18 @@ namespace AutoSleep.Core
                 double deltaSeconds = (now - lastCheckTime).TotalSeconds;
                 lastCheckTime = now;
 
+                ulong tickNow = GetTickCount64();
+                double tickDeltaSeconds = (tickNow - lastTick) / 1000.0;
+                lastTick = tickNow;
+
                 // ---- 唤醒检测（永远优先） ----
-                if (deltaSeconds > (sleepSeconds * 5))
+                // 仅当墙钟前进量远大于单调时钟前进量时才判定为真实睡眠/挂起：
+                // 真实睡眠(S3/S4)时 GetTickCount64 冻结而墙钟继续走（差≈睡眠时长）；
+                // 时间窗口分支的 60s 有意睡眠两者同步增长（差≈0），不会误判。
+                double suspendSeconds = deltaSeconds - tickDeltaSeconds;
+                if (suspendSeconds > 30)
                 {
-                    _log.Write("Wake from sleep, resetting timer.");
+                    _log.Write(string.Format("Wake from sleep, resetting timer. (wall={0:F0}s, tick={1:F0}s)", deltaSeconds, tickDeltaSeconds));
                     _elapsed = 0;
                     lastCheckTime = now;
                     Thread.Sleep(sleepSeconds * 1000);
@@ -92,17 +106,16 @@ namespace AutoSleep.Core
                 }
 
                 // ---- 时间窗口 ----
-                bool inWindow = true;
-                if (_config.EnableTimeWindow)
-                {
-                    int hour = now.Hour;
-                    int start = _config.TimeWindowStart;
-                    int end = _config.TimeWindowEnd;
-                    if (start < end)
-                        inWindow = (hour >= start && hour < end);
-                    else
-                        inWindow = (hour >= start || hour < end);
-                }
+                // 始终按配置 Start/End 计算实际时段：EnableTimeWindow 总开关只控制硬编码分支（分支2），
+                // 不影响自定义逻辑里 TimeWindow 节点对"当前是否在窗口内"的判定
+                bool inWindow;
+                int hourNow = now.Hour;
+                int winStart = _config.TimeWindowStart;
+                int winEnd = _config.TimeWindowEnd;
+                if (winStart < winEnd)
+                    inWindow = (hourNow >= winStart && hourNow < winEnd);
+                else
+                    inWindow = (hourNow >= winStart || hourNow < winEnd);
 
                 // ---- 条件变量化 ----
                 bool cpuIdle = data.CpuPercent < _config.CpuThreshold;
@@ -113,9 +126,16 @@ namespace AutoSleep.Core
                 bool processIdle = !_config.EnableProcessCheck || runningProc == null;
                 bool timeWindowIdle = !_config.EnableTimeWindow || inWindow;
 
+                // ---- 统一日志输出在决策之后（见下方"统一日志输出"段），旧状态块已并入 WriteStatusBlock ----
+
+
                 // ============================================================
-                // 分支1：自定义逻辑（如果启用）
+                // 决策（判定/计时/重置逻辑与源码一致；只删除各处独立日志行，改由统一输出层输出）
                 // ============================================================
+                bool decisionIdle;
+                var failedReasons = new List<string>();
+
+                // ---- 分支1：自定义逻辑（如果启用） ----
                 if (_config.CustomLogicEnabled && _config.CustomLogicTree != null)
                 {
                     var customValues = new Dictionary<string, bool>();
@@ -125,13 +145,23 @@ namespace AutoSleep.Core
                     customValues["Network"] = networkIdle;
                     customValues["User"] = userIdle;
                     customValues["Process"] = processIdle;
-                    customValues["TimeWindow"] = timeWindowIdle;
+                    customValues["TimeWindow"] = inWindow;
 
-                    RuleResult customResult = _rules.Evaluate(_config.CustomLogicTree, customValues);
-                    bool idle = customResult.Idle;
+                    // 原始指标（供自定义逻辑节点级阈值使用；无节点数值时引擎回退上面的布尔）
+                    var customMetrics = new Dictionary<string, double>();
+                    customMetrics["CPU"] = data.CpuPercent;
+                    customMetrics["GPU"] = data.GpuPercent;
+                    customMetrics["Disk"] = data.DiskKBps;
+                    customMetrics["Network"] = data.NetworkKBps;
+                    customMetrics["User"] = data.IdleSeconds;
+
+                    RuleResult customResult = _rules.Evaluate(_config.CustomLogicTree, customValues, customMetrics);
+                    decisionIdle = customResult.Idle;
                     string action = customResult.Action;
+                    if (customResult.FailedConditions != null)
+                        failedReasons.AddRange(customResult.FailedConditions);
 
-                    if (idle)
+                    if (decisionIdle)
                     {
                         if (action == "sleep")
                         {
@@ -142,63 +172,40 @@ namespace AutoSleep.Core
                         {
                             _elapsed += deltaSeconds;
                         }
-
-                        // 日志输出（对照原版逐行）
-                        if ((now - _lastLogTime).TotalSeconds >= 5)
-                        {
-                            _log.Write(string.Format("Idle: {0:F1} sec (CPU: {1:F1}%, GPU: {2:F1}%)", _elapsed, data.CpuPercent, data.GpuPercent));
-                            if (_config.EnableNetworkCheck)
-                                _log.Write(string.Format("Network: {0:F1} KB/s", data.NetworkKBps));
-                            if (_config.EnableDiskCheck)
-                                _log.Write(string.Format("Disk: {0:F1} KB/s", data.DiskKBps));
-                            if (_config.EnableProcessCheck && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
-                                _log.Write(string.Format("Protected: {0}", runningProc ?? ""));
-                            if (_config.EnableTimeWindow)
-                                _log.Write(string.Format("TimeWindow: {0}", inWindow));
-                            _lastLogTime = now;
-                        }
                     }
                     else
                     {
                         if (action == "reset_timer")
-                        {
-                            _log.Write("Timer reset by custom logic");
                             _elapsed = 0;
-                        }
                         else if (action == "nothing")
                         {
                             // 什么都不做，保持 elapsed 不变
                         }
                         else
                         {
-                            if (_elapsed > 0)
-                                _log.Write(string.Format("Load recovered, timer reset (CPU: {0:F1}%, GPU: {1:F1}%)", data.CpuPercent, data.GpuPercent));
                             _elapsed = 0;
-                            // 原版此处不更新 _lastLogTime，保持一致
                         }
                     }
                 }
-                // ============================================================
-                // 分支2：原有硬编码逻辑（自定义未启用时执行）
-                // ============================================================
+                // ---- 分支2：原有硬编码逻辑（自定义未启用时执行） ----
                 else
                 {
                     // ---- 时间窗口 ----
                     if (_config.EnableTimeWindow && !inWindow)
                     {
-                        if (_elapsed > 0)
-                            _log.Write(string.Format("Outside time window ({0}-{1}), idle mode.", _config.TimeWindowStart, _config.TimeWindowEnd));
+                        AddFailed(failedReasons, "TimeWindow");
                         _elapsed = 0;
-                        Thread.Sleep(60000);
+                        WriteStatusBlock(failedReasons, data, runningProc, inWindow);
+                        Thread.Sleep(sleepSeconds * 1000);
                         continue;
                     }
 
                     // ---- 用户活动 ----
                     if (_config.EnableUserActivity && data.IdleSeconds < 3)
                     {
-                        if (_elapsed > 0)
-                            _log.Write("User activity detected, timer reset.");
+                        AddFailed(failedReasons, "User");
                         _elapsed = 0;
+                        WriteStatusBlock(failedReasons, data, runningProc, inWindow);
                         Thread.Sleep(sleepSeconds * 1000);
                         continue;
                     }
@@ -206,16 +213,14 @@ namespace AutoSleep.Core
                     // ---- 网络活动 ----
                     if (_config.EnableNetworkCheck && data.NetworkKBps > _config.NetworkThresholdKBps)
                     {
-                        if (_elapsed > 0)
-                            _log.Write(string.Format("Network activity detected ({0:F1} KB/s), timer reset.", data.NetworkKBps));
+                        AddFailed(failedReasons, "Network");
                         _elapsed = 0;
                     }
 
                     // ---- 磁盘活动 ----
                     if (_config.EnableDiskCheck && data.DiskKBps > _config.DiskThresholdKBps)
                     {
-                        if (_elapsed > 0)
-                            _log.Write(string.Format("Disk activity detected ({0:F1} KB/s), timer reset.", data.DiskKBps));
+                        AddFailed(failedReasons, "Disk");
                         _elapsed = 0;
                     }
 
@@ -224,40 +229,34 @@ namespace AutoSleep.Core
                     {
                         if (runningProc != null)
                         {
-                            if (_elapsed > 0)
-                                _log.Write(string.Format("Protected process pattern '{0}' is running, timer reset.", runningProc));
+                            AddFailed(failedReasons, "Process");
                             _elapsed = 0;
                         }
                     }
 
                     // ---- CPU / GPU 空闲判断（硬编码 AND）----
-                    bool idle = cpuIdle && gpuIdle && diskIdle && networkIdle && userIdle && processIdle && timeWindowIdle;
+                    decisionIdle = cpuIdle && gpuIdle && diskIdle && networkIdle && userIdle && processIdle && timeWindowIdle;
 
-                    if (idle)
+                    if (decisionIdle)
                     {
                         _elapsed += deltaSeconds;
-                        if ((now - _lastLogTime).TotalSeconds >= 5)
-                        {
-                            _log.Write(string.Format("Idle: {0:F1} sec (CPU: {1:F1}%, GPU: {2:F1}%)", _elapsed, data.CpuPercent, data.GpuPercent));
-                            if (_config.EnableNetworkCheck)
-                                _log.Write(string.Format("Network: {0:F1} KB/s", data.NetworkKBps));
-                            if (_config.EnableDiskCheck)
-                                _log.Write(string.Format("Disk: {0:F1} KB/s", data.DiskKBps));
-                            if (_config.EnableProcessCheck && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
-                                _log.Write(string.Format("Protected: {0}", runningProc ?? ""));
-                            if (_config.EnableTimeWindow)
-                                _log.Write(string.Format("TimeWindow: {0}", inWindow));
-                            _lastLogTime = now;
-                        }
                     }
                     else
                     {
-                        if (_elapsed > 0)
-                            _log.Write(string.Format("Load recovered, timer reset (CPU: {0:F1}%, GPU: {1:F1}%)", data.CpuPercent, data.GpuPercent));
+                        // CPU/GPU 无独立违反分支，在此补充失败原因（其余已在上面收集）
+                        if (!cpuIdle) AddFailed(failedReasons, "CPU");
+                        if (!gpuIdle) AddFailed(failedReasons, "GPU");
                         _elapsed = 0;
-                        _lastLogTime = now;
                     }
                 }
+
+                // ============================================================
+                // 统一日志输出（节流 = 配置 Interval；两套格式：计时 / 非计时，字段集合一致）
+                // ============================================================
+                if (decisionIdle)
+                    WriteIdleBlock(data, runningProc, inWindow);
+                else
+                    WriteStatusBlock(failedReasons, data, runningProc, inWindow);
 
                 // ---- 触发 ----
                 if (_elapsed >= (_config.DurationMin * 60))
@@ -294,11 +293,99 @@ namespace AutoSleep.Core
                 }
 
                 // 原版最后一行：Write-Host "Log Rotation checking time： X hour (Default checking is 1 hour.)"
-                _log.Write(string.Format("Log Rotation checking time: {0} hour (Default checking is 1 hour.)",
+                // 精度与日志其它数值行统一（F2，小时单位）
+                _log.Write(string.Format("Log Rotation checking time: {0:F2} hour (Default checking is 1 hour.)",
                     (DateTime.Now - _lastRotationCheck).TotalHours));
 
                 Thread.Sleep(sleepSeconds * 1000);
             }
+        }
+
+        // ---- 统一日志输出层（节流 = 配置 Interval；仅此两处 + 事件行写日志） ----
+        private static void AddFailed(List<string> list, string cond)
+        {
+            if (!list.Contains(cond))
+                list.Add(cond);
+        }
+
+        // 非计时周期：Status 首行 + 决策者原因行（映射回源码原有行族）+ 全指标详情行
+        private void WriteStatusBlock(List<string> reasons, HardwareData data, string runningProc, bool inWindow)
+        {
+            if ((DateTime.Now - _lastLogTime).TotalSeconds < _config.Interval)
+                return;
+
+            _log.Write(string.Format("Status: Not idle (CPU: {0:F1}%, GPU: {1:F1}%)", data.CpuPercent, data.GpuPercent));
+
+            bool cpuGpuReported = false;
+            bool hasReason = false;
+            foreach (var cond in reasons)
+            {
+                hasReason = true;
+                switch (cond)
+                {
+                    case "User":
+                        _log.Write("User activity detected, timer reset.");
+                        break;
+                    case "Network":
+                        _log.Write(string.Format("Network activity detected ({0:F1} KB/s), timer reset.", data.NetworkKBps));
+                        break;
+                    case "Disk":
+                        _log.Write(string.Format("Disk activity detected ({0:F1} KB/s), timer reset.", data.DiskKBps));
+                        break;
+                    case "Process":
+                        if (runningProc != null)
+                            _log.Write(string.Format("Protected process pattern '{0}' is running, timer reset.", runningProc));
+                        break;
+                    case "TimeWindow":
+                        _log.Write(string.Format("Outside time window ({0}-{1}), idle mode.", _config.TimeWindowStart, _config.TimeWindowEnd));
+                        break;
+                    case "CPU":
+                    case "GPU":
+                        // 源码中 CPU/GPU 超阈值对应的行族是 Load recovered（带 CPU/GPU 数值）
+                        if (!cpuGpuReported)
+                        {
+                            _log.Write(string.Format("Load recovered, timer reset (CPU: {0:F1}%, GPU: {1:F1}%)", data.CpuPercent, data.GpuPercent));
+                            cpuGpuReported = true;
+                        }
+                        break;
+                    default:
+                        _log.Write("Timer reset by custom logic");
+                        break;
+                }
+            }
+            if (!hasReason)
+                _log.Write("Timer reset by custom logic");
+
+            // 详情行（与计时块同源生成）
+            if (_config.EnableNetworkCheck)
+                _log.Write(string.Format("Network: {0:F1} KB/s", data.NetworkKBps));
+            if (_config.EnableDiskCheck)
+                _log.Write(string.Format("Disk: {0:F1} KB/s", data.DiskKBps));
+            if (_config.EnableProcessCheck && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
+                _log.Write(string.Format("Protected: {0}", runningProc ?? ""));
+            if (_config.EnableTimeWindow)
+                _log.Write(string.Format("TimeWindow: {0}", inWindow));
+            _log.Write(string.Format("User: {0:F0}s", data.IdleSeconds));
+            _lastLogTime = DateTime.Now;
+        }
+
+        // 计时周期：Idle 首行 + 全指标详情行（含 User，字段与状态块一致）
+        private void WriteIdleBlock(HardwareData data, string runningProc, bool inWindow)
+        {
+            if ((DateTime.Now - _lastLogTime).TotalSeconds < _config.Interval)
+                return;
+
+            _log.Write(string.Format("Idle: {0:F1} sec (CPU: {1:F1}%, GPU: {2:F1}%)", _elapsed, data.CpuPercent, data.GpuPercent));
+            if (_config.EnableNetworkCheck)
+                _log.Write(string.Format("Network: {0:F1} KB/s", data.NetworkKBps));
+            if (_config.EnableDiskCheck)
+                _log.Write(string.Format("Disk: {0:F1} KB/s", data.DiskKBps));
+            if (_config.EnableProcessCheck && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
+                _log.Write(string.Format("Protected: {0}", runningProc ?? ""));
+            if (_config.EnableTimeWindow)
+                _log.Write(string.Format("TimeWindow: {0}", inWindow));
+            _log.Write(string.Format("User: {0:F0}s", data.IdleSeconds));
+            _lastLogTime = DateTime.Now;
         }
 
         private bool ShowCountdownWindow(int seconds, string powerAction)
