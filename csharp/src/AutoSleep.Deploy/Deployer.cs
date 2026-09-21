@@ -328,6 +328,24 @@ namespace AutoSleep.Deploy
             if (!Directory.Exists(InstallDir))
                 Directory.CreateDirectory(InstallDir);
 
+            // ---- 确保旧版进程退出 ----
+            // 旧版 Uninstall.exe 卸载时会终止 AutoSleep 三进程，但升级时静默调用的 Inno
+            // 卸载器（unins000.exe）不会终止它们。若 AutoSleepSettings.exe（设置窗口，
+            // 检查更新场景下必然在运行）或 AutoSleep.exe（计划任务监控）仍占用 exe 文件，
+            // 后续 File.Copy 覆盖会因文件被占用而失败，导致安装中止（1.0.13 检查更新升级
+            // 异常即为该原因）。因此复制前统一终止三进程，与旧版卸载器行为一致，不依赖
+            // 卸载器类型；仅精确匹配 AutoSleep 进程名，不影响日志监控等其他进程。
+            WriteLog("----- 确保旧版进程退出 -----");
+            try
+            {
+                foreach (var proc in Process.GetProcessesByName("AutoSleep")) { try { proc.Kill(); } catch { } }
+                foreach (var proc in Process.GetProcessesByName("AutoSleepSettings")) { try { proc.Kill(); } catch { } }
+                foreach (var proc in Process.GetProcessesByName("AutoSleepServer")) { try { proc.Kill(); } catch { } }
+                System.Threading.Thread.Sleep(1000);
+                WriteLog("已终止 AutoSleep 相关进程");
+            }
+            catch { }
+
             // ---- 复制文件 ----
             WriteLog("----- 复制文件 -----");
             string sourceDir = stagingDir;   // 从安全暂存目录取源文件
@@ -340,14 +358,15 @@ namespace AutoSleep.Deploy
             {
                 string src = Path.Combine(sourceDir, file);
                 string dst = Path.Combine(InstallDir, file);
-                if (File.Exists(src))
-                {
-                    File.Copy(src, dst, true);
-                    WriteLog("已复制: " + file);
-                }
-                else
+                if (!File.Exists(src))
                 {
                     WriteLog("未找到: " + file + "，跳过");
+                    continue;
+                }
+                if (!CopyFileWithRetry(src, dst, file))
+                {
+                    WriteLog("复制失败: " + file + "，安装中止");
+                    return 1;
                 }
             }
 
@@ -358,8 +377,11 @@ namespace AutoSleep.Deploy
                 string curlDst = Path.Combine(InstallDir, "curl.exe");
                 if (File.Exists(curlSrc))
                 {
-                    File.Copy(curlSrc, curlDst, true);
-                    WriteLog("已复制: curl.exe（Win7 专用）");
+                    if (!CopyFileWithRetry(curlSrc, curlDst, "curl.exe（Win7 专用）"))
+                    {
+                        WriteLog("复制失败: curl.exe，安装中止");
+                        return 1;
+                    }
                 }
                 else
                 {
@@ -677,6 +699,35 @@ namespace AutoSleep.Deploy
                 return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
             }
             catch { return false; }
+        }
+
+        // 带重试的文件复制：升级时旧进程刚终止，文件句柄可能尚未完全释放，首两次失败
+        // 属正常；重试后仍失败则明确返回 false，由调用方中止安装（Inno 报错提示用户），
+        // 不再以未捕获异常崩溃导致静默失败。
+        static bool CopyFileWithRetry(string src, string dst, string name)
+        {
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    File.Copy(src, dst, true);
+                    WriteLog("已复制: " + name);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < 3)
+                    {
+                        WriteLog("复制 " + name + " 失败（第 " + attempt + " 次），重试: " + ex.Message);
+                        System.Threading.Thread.Sleep(1000);
+                    }
+                    else
+                    {
+                        WriteLog("复制 " + name + " 失败（已重试 3 次）: " + ex.Message);
+                    }
+                }
+            }
+            return false;
         }
 
         static bool GetHibernateStatus()
