@@ -738,8 +738,8 @@ $btnUpdate.Add_Click({
 
     # 2. 镜像源列表（依次尝试）
     $mirrors = @(
-        "https://api.github.com/repos/Cesium-developer/AutoSleep/releases/latest",
-        "https://ghproxy.net/https://api.github.com/repos/Cesium-developer/AutoSleep/releases/latest"
+        "https://api.github.com/repos/Cesium-developer/IdleNap/releases/latest",
+        "https://ghproxy.net/https://api.github.com/repos/Cesium-developer/IdleNap/releases/latest"
     )
 
     $releaseInfo = $null

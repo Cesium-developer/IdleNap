@@ -21,6 +21,8 @@ namespace AutoSleep.Settings
         private const string ReadmeFile = @"C:\ProgramData\AutoSleep\README.txt";
         private const string ServerScript = @"C:\ProgramData\AutoSleep\AutoSleepServer.exe";
         private const string RegUninstallPath = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AutoSleep";
+        // Inno 版安装的卸载键（与 Setup.iss 的 AppId 一致）：当前版本号读取的主路径
+        private const string RegInnoUninstallPath = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1";
 
         private ComboBox _comboMode;
         private Label _lblHibernateStatus;
@@ -422,7 +424,13 @@ namespace AutoSleep.Settings
             bool isWin7 = IsWindows7();
 
             string currentVersion = "0.0.0";
-            try { currentVersion = GetRegistryString(RegUninstallPath, "DisplayVersion", "0.0.0"); } catch { }
+            // 当前版本号：优先读 Inno 安装的卸载键（{AppId}_is1，1.0.14 起），
+            // 读不到时回退旧版 NSIS 卸载键（Uninstall\AutoSleep，1.0.13 及更早的检查更新场景）
+            try { currentVersion = GetRegistryString(RegInnoUninstallPath, "DisplayVersion", "0.0.0"); } catch { }
+            if (string.IsNullOrEmpty(currentVersion) || currentVersion == "0.0.0")
+            {
+                try { currentVersion = GetRegistryString(RegUninstallPath, "DisplayVersion", "0.0.0"); } catch { }
+            }
             string[] mirrors = new string[] { "https://api.github.com/repos/Cesium-developer/IdleNap/releases/latest", "https://ghproxy.net/https://api.github.com/repos/Cesium-developer/IdleNap/releases/latest" };
             string latestVersion = null, releaseJson = null;
 
