@@ -14,8 +14,6 @@ namespace AutoSleep.Deploy
         private const string ShortcutName = "AutoSleep 设置";
         private const string RegUninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AutoSleep";
         // Inno 卸载键（必须与 Setup.iss 的 AppId 一致）：64 位视图由 Inno 在安装阶段创建；
-        // 升级时 Deployer 静默调用的卸载器会把它删除，须备份-恢复；32 位视图键为早期
-        // 32 位模式安装遗留，必须清理，否则控制面板/GeekUninstaller 出现 32 位残留条目。
         private const string RegInnoUninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1";
         private const string RegInnoUninstall32Path = @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}_is1";
         private const string ConfigFile = InstallDir + @"\settings.json";

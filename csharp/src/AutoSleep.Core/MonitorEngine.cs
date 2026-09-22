@@ -100,7 +100,9 @@ namespace AutoSleep.Core
                 HardwareData data = _hardware.Sample();
 
                 string runningProc = null;
-                if (_config.EnableProcessCheck && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
+                // EnableProcessCheck 控制硬编码分支（分支2）的进程判定；自定义逻辑启用时 Process 条件不受该开关钳制，需恒采集
+                if ((_config.EnableProcessCheck || (_config.CustomLogicEnabled && _config.CustomLogicTree != null))
+                    && _config.ProtectedProcesses != null && _config.ProtectedProcesses.Count > 0)
                 {
                     runningProc = _processMonitor.FindRunning(_config.ProtectedProcesses);
                 }
@@ -138,13 +140,15 @@ namespace AutoSleep.Core
                 // ---- 分支1：自定义逻辑（如果启用） ----
                 if (_config.CustomLogicEnabled && _config.CustomLogicTree != null)
                 {
+                    // 自定义逻辑的值字典：一律使用未受启用开关门控的原始判定，
+                    // 开关只在硬编码分支（分支2）起作用；TimeWindow 沿用已修好的原始 inWindow
                     var customValues = new Dictionary<string, bool>();
-                    customValues["CPU"] = cpuIdle;
-                    customValues["GPU"] = gpuIdle;
-                    customValues["Disk"] = diskIdle;
-                    customValues["Network"] = networkIdle;
-                    customValues["User"] = userIdle;
-                    customValues["Process"] = processIdle;
+                    customValues["CPU"] = data.CpuPercent < _config.CpuThreshold;
+                    customValues["GPU"] = data.GpuPercent < _config.GpuThreshold;
+                    customValues["Disk"] = data.DiskKBps < _config.DiskThresholdKBps;
+                    customValues["Network"] = data.NetworkKBps < _config.NetworkThresholdKBps;
+                    customValues["User"] = data.IdleSeconds >= 3;
+                    customValues["Process"] = runningProc == null;
                     customValues["TimeWindow"] = inWindow;
 
                     // 原始指标（供自定义逻辑节点级阈值使用；无节点数值时引擎回退上面的布尔）

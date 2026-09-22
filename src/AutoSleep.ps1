@@ -474,8 +474,9 @@ while ($true) {
     }
 
     # ---- 进程白名单 ----
+    # enableProcess 控制硬编码分支（分支2）的进程判定；自定义逻辑启用时 Process 条件不受该开关钳制，需恒采集
     $runningProc = $null
-    if ($enableProcess -and $protectedProcesses.Count -gt 0) {
+    if (($enableProcess -or ($config.CustomLogicEnabled -and $config.CustomLogicTree)) -and $protectedProcesses.Count -gt 0) {
         $allProcesses = Get-Process | ForEach-Object { $_.ProcessName }
         foreach ($pattern in $protectedProcesses) {
             if ($allProcesses -match $pattern) {
@@ -526,13 +527,15 @@ while ($true) {
     # ============================================================
     if ($config.CustomLogicEnabled -and $config.CustomLogicTree) {
         $failedReasons = New-Object System.Collections.ArrayList
+        # 自定义逻辑的值字典：一律使用未受启用开关门控的原始判定，
+        # 开关只在硬编码分支（分支2）起作用；TimeWindow 沿用已修好的原始 $inWindow
         $customValues = @{
-            "CPU"        = $cpuIdle
-            "GPU"        = $gpuIdle
-            "Disk"       = $diskIdle
-            "Network"    = $networkIdle
-            "User"       = $userIdle
-            "Process"    = $processIdle
+            "CPU"        = $cpu -lt $cpuThreshold
+            "GPU"        = $gpu -lt $gpuThreshold
+            "Disk"       = $diskKBps -lt $diskThresholdKBps
+            "Network"    = $netKBps -lt $networkThresholdKBps
+            "User"       = $idleMs -ge 3000
+            "Process"    = -not $runningProc
             "TimeWindow" = $inWindow
         }
         # 原始指标（供自定义逻辑节点级阈值使用；无节点数值时引擎回退上面的布尔）

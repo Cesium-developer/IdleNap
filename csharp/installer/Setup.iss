@@ -8,7 +8,7 @@
 ;   4) 升级路径：Deployer 检测新旧卸载器（Uninstall.exe = 旧版直接跑；unins000.exe = 新版
 ;      静默调用），注册表卸载键为 {AppId}_is1（与 Deployer.cs 硬编码一致）
 #define MyAppName "AutoSleep 智能休眠工具"
-#define MyAppVersion "1.0.14"
+#define MyAppVersion "1.0.15"
 #define MyAppPublisher "Cesium-developer"
 #define MyAppId "{8F2C1D4E-5A6B-4C7D-8E9F-0A1B2C3D4E5F}"
 

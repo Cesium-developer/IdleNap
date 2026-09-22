@@ -1,4 +1,4 @@
-name: 自动编译安装包
+name: 编译PowerShell版安装包
 
 on:
   push:

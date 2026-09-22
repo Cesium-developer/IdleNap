@@ -1,6 +1,6 @@
 # AutoSleep
 
-![Build Status](https://github.com/Cesium-developer/IdleNap/actions/workflows/build.yml/badge.svg)
+![Build Status](https://github.com/Cesium-developer/IdleNap/actions/workflows/build.yml/badge.svg)![Build Status](https://github.com/Cesium-developer/IdleNap/actions/workflows/build-csharp.yml/badge.svg)
 
 ![设置界面](docs/images/settings.png)
 
@@ -15,7 +15,7 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 ## 项目结构
 
-### Powershell版
+### PowerShell版
 
 | 文件                        | 用途                                   |
 | ------------------------- | ------------------------------------ |
@@ -43,7 +43,7 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 ## 系统要求
 
-### Powershell版
+### PowerShell版
 
 - Windows 10 1803+ / Windows 11
 - PowerShell 5.1+
@@ -59,7 +59,7 @@ Windows 智能电源管理守护工具：多条件感知，任务完成后自动
 
 ## 从源码构建安装包
 
-### Powershell版
+### PowerShell版
 
 ### 前置条件
 
@@ -245,7 +245,7 @@ AutoSleep 同时监控 6 个维度，全部满足且持续达到设定时间后�
 两种方式：
 
 - 方式一：Windows 设置 → 应用 → 已安装的应用 → 找到 “AutoSleep 智能休眠工具” → 卸载
-- 方式二：运行 `C:\ProgramData\AutoSleep\Uninstall.exe`（Powershell版）/`C:\ProgramData\AutoSleep\unins000.exe`（C#版）
+- 方式二：运行 `C:\ProgramData\AutoSleep\Uninstall.exe`（PowerShell版）/`C:\ProgramData\AutoSleep\unins000.exe`（C#版）
 
 卸载后，所有文件、计划任务、注册表项都会被删除，无残留。
 
